@@ -1,0 +1,23 @@
+name: build-pipeline-image
+on:
+  push:
+    paths: ["pipeline/**", ".github/workflows/pipeline-image.yml"]
+  workflow_dispatch:
+permissions:
+  packages: write
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./pipeline
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/scanforge-pipeline:latest
