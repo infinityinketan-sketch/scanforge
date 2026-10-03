@@ -94,6 +94,9 @@ async def process(job_id: str):
 
 
 async def _run_job(job_id: str):
+    if not config.RUNPOD_ENDPOINT:
+        # Manual / Colab mode: wait until an external worker POSTs results.
+        return
     db.update_job(job_id, status="processing", started=time.time())
     exp = int(time.time()) + config.PHOTO_FETCH_TTL
     result_url = f"{config.API_BASE}/jobs/{job_id}/result?exp={exp}&sig={_sig(job_id, exp)}"
@@ -114,7 +117,6 @@ async def _run_job(job_id: str):
             )
             r.raise_for_status()
             db.update_job(job_id, runpod_job=r.json()["id"])
-        # Watchdog: if the worker never POSTs a result, fail after 30 min.
         await asyncio.sleep(1800)
         job = db.get_job(job_id)
         if job and job["status"] == "processing":
@@ -155,6 +157,38 @@ async def receive_result(
         (jdir / "pipeline.log").write_text(log)
     db.update_job(job_id, status="done", finished=time.time())
     return {"ok": True}
+
+
+@app.get("/jobs/{job_id}/manifest")
+def manifest(job_id: str, key: str):
+    """Work manifest for the Colab/RunPod worker. Requires the backend secret."""
+    if key != config.SECRET:
+        raise HTTPException(403)
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(404)
+    exp = int(time.time()) + config.PHOTO_FETCH_TTL
+    return {
+        "job_id": job_id,
+        "status": job["status"],
+        "n_photos": job["n_photos"],
+        "photo_urls": _photo_urls(job_id),
+        "result_url": f"{config.API_BASE}/jobs/{job_id}/result?exp={exp}&sig={_sig(job_id, exp)}",
+    }
+
+
+@app.post("/jobs/{job_id}/dev-pay")
+def dev_pay(job_id: str, key: str):
+    """DEV ONLY: mark a job paid without Play. Only exists while ALLOW_DEV_BILLING=1."""
+    if config.DEV_BILLING != "1":
+        raise HTTPException(404)
+    if key != config.SECRET:
+        raise HTTPException(403)
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(404)
+    db.update_job(job_id, paid=1, product_id="dev")
+    return {"paid": True}
 
 
 @app.get("/jobs/{job_id}")
