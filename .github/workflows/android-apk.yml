@@ -6,18 +6,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
       - name: Generate Gradle wrapper
-        run: gradle wrapper --gradle-version 8.7
+        run: |
+          cd app
+          gradle wrapper --gradle-version 8.7
+
       - name: Build debug APK
         run: |
+          cd app
           chmod +x gradlew
           ./gradlew assembleDebug -PapiBase=https://scanforge-api.onrender.com
+
       - uses: actions/upload-artifact@v4
         with:
           name: scanforge-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/debug/*.apk
