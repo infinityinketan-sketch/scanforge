@@ -1,6 +1,7 @@
 name: build-apk
 on:
   workflow_dispatch:
+
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -18,14 +19,12 @@ jobs:
 
       - name: Generate Gradle wrapper
         run: |
-          cd app
-          gradle wrapper --gradle-version 8.7
+          ./gradlew wrapper --gradle-version 8.7
 
       - name: Build debug APK
         run: |
-          cd app
-          chmod +x gradlew
-          ./gradlew assembleDebug -PapiBase=https://scanforge-api.onrender.com
+          chmod +x ./gradlew
+          ./gradlew :app:assembleDebug -PapiBase=https://scanforge-api.onrender.com
 
       - uses: actions/upload-artifact@v4
         with:
