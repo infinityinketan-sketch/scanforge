@@ -14,7 +14,7 @@ jobs:
       - name: Generate Gradle wrapper
         run: cd android/ScanForge && gradle wrapper --gradle-version 8.7
       - name: Build debug APK
-        run: cd android/ScanForge && chmod +x gradlew && ./gradlew assembleDebug
+        run: cd android/ScanForge && chmod +x gradlew && ./gradlew assembleDebug -PapiBase=https://scanforge-api.onrender.com
       - uses: actions/upload-artifact@v4
         with:
           name: scanforge-debug-apk
