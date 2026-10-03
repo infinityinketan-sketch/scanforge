@@ -12,10 +12,12 @@ jobs:
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
       - name: Generate Gradle wrapper
-        run: cd android/ScanForge && gradle wrapper --gradle-version 8.7
+        run: gradle wrapper --gradle-version 8.7
       - name: Build debug APK
-        run: cd android/ScanForge && chmod +x gradlew && ./gradlew assembleDebug -PapiBase=https://scanforge-api.onrender.com
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug -PapiBase=https://scanforge-api.onrender.com
       - uses: actions/upload-artifact@v4
         with:
           name: scanforge-debug-apk
-          path: android/ScanForge/app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/debug/app-debug.apk
