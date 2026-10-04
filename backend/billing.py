@@ -8,8 +8,14 @@ import config
 SCOPES = ["https://www.googleapis.com/auth/androidpublisher"]
 
 
-def verify_purchase(product_id: str, token: str) -> bool:
-    """Verify a one-time Play Billing purchase via Play Developer API."""
+def verify_purchase(job_id: str, product_id: str, token: str) -> bool:
+    """Verify a one-time Play Billing purchase via Play Developer API.
+
+    Checks that the product is an export unlock, the purchase is completed, and (when the
+    app attached one) that the purchase was made for this job.
+    """
+    if product_id not in config.EXPORT_PRODUCT_IDS:
+        return False
     if not (config.SERVICE_ACCOUNT_JSON or config.SERVICE_ACCOUNT_PATH):
         # Dev mode: only allowed when explicitly enabled.
         return config.DEV_BILLING == "1"
@@ -27,5 +33,8 @@ def verify_purchase(product_id: str, token: str) -> bool:
         .get(packageName=config.PLAY_PACKAGE, productId=product_id, token=token)
         .execute()
     )
-    # purchaseState 0 = purchased
-    return result.get("purchaseState") == 0
+    # purchaseState 0 = purchased (1 = cancelled, 2 = pending)
+    if result.get("purchaseState") != 0:
+        return False
+    owner = result.get("obfuscatedExternalProfileId")
+    return owner is None or owner == job_id

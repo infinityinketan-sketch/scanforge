@@ -38,7 +38,7 @@ class CaptureActivity : ComponentActivity() {
     private lateinit var ring: RingView
     private lateinit var info: TextView
     private lateinit var btn: Button
-    private lateinit var imageCapture: ImageCapture
+    private var imageCapture: ImageCapture? = null
     private lateinit var cameraExecutor: ExecutorService
 
     private val shots = mutableListOf<File>()
@@ -91,13 +91,14 @@ class CaptureActivity : ComponentActivity() {
         providerFuture.addListener({
             val provider = providerFuture.get()
             val preview = Preview.Builder().build().also {
-                it.surfaceProvider = previewView.surfaceProvider
+                it.setSurfaceProvider(previewView.surfaceProvider)
             }
-            imageCapture = ImageCapture.Builder()
+            val capture = ImageCapture.Builder()
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                 .build()
             provider.unbindAll()
-            provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageCapture)
+            provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, capture)
+            imageCapture = capture
         }, ContextCompat.getMainExecutor(this))
     }
 
@@ -115,7 +116,11 @@ class CaptureActivity : ComponentActivity() {
 
     private fun toggle() {
         if (busy) return
-        if (!capturing && shots.isNotEmpty()) { upload(); return }
+        if (imageCapture == null) {
+            Toast.makeText(this, "Camera is still starting…", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!capturing && shots.size >= MIN_SHOTS) { upload(); return }
         capturing = !capturing
         btn.text = if (capturing) "■ Stop & upload" else "▶ Start scanning"
         if (capturing) {
@@ -129,14 +134,23 @@ class CaptureActivity : ComponentActivity() {
     }
 
     private fun takeShot() {
+        val capture = imageCapture ?: return
+        if (shots.size >= MAX_SHOTS) {
+            Toast.makeText(this, "Reached $MAX_SHOTS photos", Toast.LENGTH_SHORT).show()
+            toggle()
+            return
+        }
         val f = File(cacheDir, "shot_${System.currentTimeMillis()}.jpg")
-        imageCapture.takePicture(
+        capture.takePicture(
             ImageCapture.OutputFileOptions.Builder(f).build(),
             cameraExecutor,
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                    shots.add(f)
-                    runOnUiThread { updateUi() }
+                    // Mutate the list only on the main thread; it is read there too.
+                    runOnUiThread {
+                        shots.add(f)
+                        updateUi()
+                    }
                 }
 
                 override fun onError(exception: ImageCaptureException) {
@@ -151,6 +165,9 @@ class CaptureActivity : ComponentActivity() {
     private fun updateUi() {
         ring.progress = shots.size
         info.text = "${shots.size} photos · walk slowly around the object, 2–3 full circles, steady light"
+        if (!capturing && !busy) {
+            btn.text = if (shots.size >= MIN_SHOTS) "⬆ Upload ${shots.size} photos" else "▶ Start scanning"
+        }
     }
 
     private fun upload() {
@@ -166,11 +183,16 @@ class CaptureActivity : ComponentActivity() {
                             "photos", it.name, it.asRequestBody("image/jpeg".toMediaType())
                         )
                     }
-                    Api.scan.uploadPhotos(job.job_id, parts)
-                    Api.scan.process(job.job_id)
+                    val up = Api.scan.uploadPhotos(job.job_id, parts)
+                    if (!up.isSuccessful) error("upload rejected (HTTP ${up.code()})")
+                    val proc = Api.scan.process(job.job_id)
+                    if (!proc.isSuccessful) {
+                        error(proc.errorBody()?.string()?.take(200) ?: "HTTP ${proc.code()}")
+                    }
                     job.job_id
                 }
                 JobStore.add(this@CaptureActivity, LocalJob(id, System.currentTimeMillis(), "queued"))
+                shots.forEach { it.delete() }
                 startActivity(
                     Intent(this@CaptureActivity, ResultActivity::class.java).putExtra("jobId", id)
                 )
@@ -179,7 +201,7 @@ class CaptureActivity : ComponentActivity() {
                 Toast.makeText(this@CaptureActivity, "Upload failed: ${e.message}", Toast.LENGTH_LONG).show()
                 busy = false
                 btn.isEnabled = true
-                btn.text = "▶ Start scanning"
+                updateUi() // photos are kept, so the user can retry the upload
             }
         }
     }
@@ -192,5 +214,6 @@ class CaptureActivity : ComponentActivity() {
 
     companion object {
         const val MIN_SHOTS = 12
+        const val MAX_SHOTS = 150
     }
 }

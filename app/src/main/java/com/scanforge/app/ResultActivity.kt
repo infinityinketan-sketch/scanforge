@@ -39,7 +39,7 @@ class ResultActivity : ComponentActivity() {
         unlockBtn = Button(this).apply { text = "Unlock export · one-time purchase" }
         glbBtn = Button(this).apply { text = "Download GLB (for Blender)" }
         stlBtn = Button(this).apply { text = "Download STL (for 3D printer)" }
-        previewBtn = Button(this).apply { text = "Open preview in browser" }
+        previewBtn = Button(this).apply { text = "View 3D preview" }
         root.addView(statusText)
         root.addView(unlockBtn)
         root.addView(glbBtn)
@@ -48,21 +48,20 @@ class ResultActivity : ComponentActivity() {
         setContentView(root)
 
         unlockBtn.setOnClickListener {
+            unlockBtn.isEnabled = false
             BillingManager(this, jobId) { ok ->
+                unlockBtn.isEnabled = true
                 if (ok) {
                     toast("Purchase verified ✓")
                     refresh()
-                } else {
-                    toast("Purchase failed or cancelled")
                 }
+                // Failures and cancellations are reported by BillingManager itself.
             }.launchExportUnlock()
         }
         glbBtn.setOnClickListener { download("glb") }
         stlBtn.setOnClickListener { download("stl") }
         previewBtn.setOnClickListener {
-            current?.preview_url?.let {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it)))
-            }
+            current?.preview_url?.let { openPreview(it) }
         }
 
         poll()
@@ -112,17 +111,33 @@ class ResultActivity : ComponentActivity() {
         val url = current?.download?.get(format) ?: return toast("No download link yet")
         lifecycleScope.launch {
             try {
-                val bytes = withContext(Dispatchers.IO) {
-                    Api.scan.downloadFile(url).byteStream().readBytes()
-                }
                 val dir = File(filesDir, "exports").apply { mkdirs() }
                 val f = File(dir, "scan_${jobId}.${format}")
-                f.writeBytes(bytes)
+                // Stream to disk: full-resolution meshes can be tens of MB.
+                withContext(Dispatchers.IO) {
+                    Api.scan.downloadFile(url).byteStream().use { input ->
+                        f.outputStream().use { input.copyTo(it) }
+                    }
+                }
                 toast("Saved ${f.name}")
                 share(f, if (format == "glb") "model/gltf-binary" else "application/octet-stream")
             } catch (e: Exception) {
                 toast("Download failed: ${e.message}")
             }
+        }
+    }
+
+    /** Opens the GLB in Google's 3D viewer (Scene Viewer); falls back to the browser. */
+    private fun openPreview(url: String) {
+        val viewer = Uri.parse("https://arvr.google.com/scene-viewer/1.0").buildUpon()
+            .appendQueryParameter("file", url)
+            .appendQueryParameter("mode", "3d_only")
+            .build()
+        val intent = Intent(Intent.ACTION_VIEW, viewer).setPackage("com.google.android.googlequicksearchbox")
+        try {
+            startActivity(intent)
+        } catch (_: Exception) {
+            startActivity(Intent(Intent.ACTION_VIEW, viewer))
         }
     }
 

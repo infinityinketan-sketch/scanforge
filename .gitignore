@@ -1,0 +1,23 @@
+# Android / Gradle
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+captures/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Backend runtime data and secrets
+backend/data/
+data/
+.env
+*service-account*.json

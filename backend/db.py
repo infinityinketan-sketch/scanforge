@@ -32,6 +32,11 @@ def init():
             finished REAL,
             error TEXT)"""
     )
+    # A Play purchase token may unlock exactly one job.
+    c.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS jobs_purchase_token ON jobs(purchase_token) "
+        "WHERE purchase_token IS NOT NULL"
+    )
     c.commit()
 
 
@@ -53,3 +58,21 @@ def update_job(job_id, **fields):
     c = _conn()
     c.execute(f"UPDATE jobs SET {sets} WHERE id=?", (*fields.values(), job_id))
     c.commit()
+
+
+def job_for_token(token):
+    row = _conn().execute("SELECT id FROM jobs WHERE purchase_token=?", (token,)).fetchone()
+    return row["id"] if row else None
+
+
+def claim_status(job_id, from_statuses, to_status, **fields):
+    """Atomically move a job between statuses; returns False if it was not in from_statuses."""
+    marks = ",".join("?" for _ in from_statuses)
+    sets = ", ".join(["status=?"] + [f"{k}=?" for k in fields])
+    c = _conn()
+    cur = c.execute(
+        f"UPDATE jobs SET {sets} WHERE id=? AND status IN ({marks})",
+        (to_status, *fields.values(), job_id, *from_statuses),
+    )
+    c.commit()
+    return cur.rowcount == 1

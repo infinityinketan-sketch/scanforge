@@ -1,6 +1,12 @@
 name: build-apk
 on:
+  push:
+    paths: ["app/**", "*.gradle.kts", "gradle.properties", ".github/workflows/android-apk.yml"]
   workflow_dispatch:
+    inputs:
+      api_base:
+        description: "Backend URL baked into the APK"
+        default: "https://scanforge-api.onrender.com"
 
 jobs:
   apk:
@@ -13,18 +19,13 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # Installs Gradle 8.7 on PATH; no wrapper is committed, so call `gradle` directly.
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
 
-      - name: Generate Gradle wrapper
-        run: |
-          ./gradlew wrapper --gradle-version 8.7
-
       - name: Build debug APK
-        run: |
-          chmod +x ./gradlew
-          ./gradlew :app:assembleDebug -PapiBase=https://scanforge-api.onrender.com
+        run: gradle :app:assembleDebug -PapiBase=${{ inputs.api_base || 'https://scanforge-api.onrender.com' }}
 
       - uses: actions/upload-artifact@v4
         with:
