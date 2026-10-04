@@ -13,13 +13,13 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
@@ -45,6 +45,16 @@ class CaptureActivity : ComponentActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private var capturing = false
     private var busy = false
+
+    private val cameraPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                startCamera()
+            } else {
+                Toast.makeText(this, "Camera permission required", Toast.LENGTH_LONG).show()
+                finish()
+            }
+        }
 
     private val shotLoop = object : Runnable {
         override fun run() {
@@ -80,7 +90,7 @@ class CaptureActivity : ComponentActivity() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             != PackageManager.PERMISSION_GRANTED
         ) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 42)
+            cameraPermission.launch(Manifest.permission.CAMERA)
         } else {
             startCamera()
         }
@@ -100,18 +110,6 @@ class CaptureActivity : ComponentActivity() {
             provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, capture)
             imageCapture = capture
         }, ContextCompat.getMainExecutor(this))
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 42 && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-            startCamera()
-        } else {
-            Toast.makeText(this, "Camera permission required", Toast.LENGTH_LONG).show()
-            finish()
-        }
     }
 
     private fun toggle() {

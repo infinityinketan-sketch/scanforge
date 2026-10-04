@@ -25,7 +25,18 @@ jobs:
           gradle-version: "8.7"
 
       - name: Build debug APK
-        run: gradle :app:assembleDebug -PapiBase=${{ inputs.api_base || 'https://scanforge-api.onrender.com' }}
+        run: |
+          set -o pipefail
+          gradle :app:assembleDebug --console=plain \
+            -PapiBase=${{ inputs.api_base || 'https://scanforge-api.onrender.com' }} 2>&1 | tee build.log
+
+      # Surface compiler/Gradle errors on the run page instead of only "exit code 1".
+      - name: Report build errors
+        if: failure()
+        run: |
+          grep -E -A4 '^e: |What went wrong|^ERROR' build.log | head -40 | while IFS= read -r line; do
+            [ -n "$line" ] && echo "::error::$line"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
