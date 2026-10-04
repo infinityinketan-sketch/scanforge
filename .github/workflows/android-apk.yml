@@ -19,7 +19,7 @@ jobs:
 
       - name: Generate Gradle wrapper
         run: |
-          gradle wrapper --gradle-version 8.7
+          ./gradlew wrapper --gradle-version 8.7
 
       - name: Build debug APK
         run: |
