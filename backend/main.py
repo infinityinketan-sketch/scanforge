@@ -85,11 +85,25 @@ def tiers():
 
 
 # ---------- jobs ----------
+class CreateReq(BaseModel):
+    tier: str | None = None
+
+
+def _service_tier(tier: str | None) -> bool:
+    """Tiers run by a 3D service: paid for before processing."""
+    return tier in providers.TIERS
+
+
 @app.post("/jobs")
-def create_job():
+def create_job(req: CreateReq | None = Body(None)):
+    tier = req.tier if req else None
+    if tier is not None and providers.provider_for(tier) is None:
+        raise HTTPException(400, f"'{tier}' processing is not available on this server")
     job_id = uuid.uuid4().hex[:16]
     db.create_job(job_id)
-    return {"job_id": job_id}
+    if tier:
+        db.update_job(job_id, tier=tier)
+    return {"job_id": job_id, "tier": tier}
 
 
 @app.post("/jobs/{job_id}/photos")
@@ -126,14 +140,18 @@ async def process(job_id: str, req: ProcessReq | None = Body(None)):
     job = db.get_job(job_id)
     if not job:
         raise HTTPException(404)
-    tier = (req.tier if req and req.tier else None) or config.DEFAULT_TIER
-    prov = providers.provider_for(tier) if tier in providers.TIERS else None
-    if tier in providers.TIERS and prov is None:
-        if req and req.tier:
+    asked = job["tier"] or (req.tier if req and req.tier else None)
+    tier = asked or config.DEFAULT_TIER
+    prov = providers.provider_for(tier) if _service_tier(tier) else None
+    if _service_tier(tier) and prov is None:
+        if asked:
             raise HTTPException(400, f"'{tier}' processing is not available on this server")
         tier = "diy"          # no service configured: fall back to the self-hosted pipeline
-    elif tier not in providers.TIERS:
+    elif not _service_tier(tier):
         tier = "diy"
+    # Service tiers cost us money per run, so they're bought before processing starts.
+    if prov and not (job["paid"] and job["product_id"] in (config.product_for_tier(tier), "dev")):
+        raise HTTPException(402, "payment required before processing")
     min_photos = providers.TIERS[tier]["min_photos"] if prov else config.MIN_PHOTOS
     if job["n_photos"] < min_photos:
         raise HTTPException(400, f"need at least {min_photos} photos for this option")
@@ -276,6 +294,7 @@ async def job_status(job_id: str):
         "tier": job["tier"],
         "progress": job["progress"] or 0,
         "export_product_id": config.product_for_tier(job["tier"]),
+        "pay_before": _service_tier(job["tier"]),
     }
     if job["status"] == "done":
         out["preview_url"] = _signed("preview", job_id, f"/jobs/{job_id}/preview", 3600)
@@ -330,7 +349,10 @@ def billing_verify(req: VerifyReq):
     if owner and owner != req.job_id:
         raise HTTPException(409, "purchase already used for another scan")
     if req.product_id != config.product_for_tier(job["tier"]):
-        raise HTTPException(400, "this purchase doesn't unlock this kind of scan")
+        raise HTTPException(400, "this purchase doesn't match this kind of scan")
+    # Refuse before the app acknowledges the purchase, so Play refunds it automatically.
+    if _service_tier(job["tier"]) and job["n_photos"] < providers.TIERS[job["tier"]]["min_photos"]:
+        raise HTTPException(400, f"need at least {providers.TIERS[job['tier']]['min_photos']} photos for this option")
     if not verify_purchase(req.job_id, req.product_id, req.token):
         raise HTTPException(400, "purchase verification failed")
     db.update_job(req.job_id, paid=1, product_id=req.product_id, purchase_token=req.token)

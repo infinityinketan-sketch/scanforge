@@ -160,8 +160,8 @@ def _tier_client(client, monkeypatch, fake, tiers=("quick", "hq")):
     return client
 
 
-def _new_real_job(c, n):
-    job = c.post("/jobs").json()["job_id"]
+def _new_real_job(c, n, tier=None):
+    job = c.post("/jobs", json={"tier": tier} if tier else None).json()["job_id"]
     files = [("photos", (f"p{i}.jpg", _real_jpeg(i), "image/jpeg")) for i in range(n)]
     c.post(f"/jobs/{job}/photos", files=files)
     return job
@@ -172,15 +172,21 @@ def test_tiers_listed_only_when_configured(client, monkeypatch):
     fake = FakeProvider()
     _tier_client(client, monkeypatch, fake, tiers=("quick",))
     t = client.get("/tiers").json()["tiers"]
-    assert [x["id"] for x in t] == ["quick"] and t[0]["export_product_id"] == "export_unlock"
+    assert [x["id"] for x in t] == ["quick"] and t[0]["export_product_id"] == "scan_quick"
 
 
 def test_quick_tier_end_to_end(client, monkeypatch):
     import processor
     fake = FakeProvider(polls_before_done=1)
     c = _tier_client(client, monkeypatch, fake)
-    job = _new_real_job(c, 12)
-    assert c.post(f"/jobs/{job}/process", json={"tier": "quick"}).json() == {"status": "queued"}
+    job = _new_real_job(c, 12, tier="quick")
+    assert c.get(f"/jobs/{job}").json()["pay_before"] is True
+    # Nothing runs (and nothing is spent at the service) until the scan is paid for.
+    assert c.post(f"/jobs/{job}/process").status_code == 402
+    bad = c.post("/billing/verify", json={"job_id": job, "product_id": "scan_hq", "token": "T"})
+    assert bad.status_code == 400
+    assert c.post("/billing/verify", json={"job_id": job, "product_id": "scan_quick", "token": "T"}).json() == {"paid": True}
+    assert c.post(f"/jobs/{job}/process").json() == {"status": "queued"}
 
     processor.run_once()                       # submit
     assert len(fake.submitted) == 12
@@ -194,11 +200,7 @@ def test_quick_tier_end_to_end(client, monkeypatch):
     preview = c.get(_path(s["preview_url"])).content
     assert preview[:4] == b"glTF"
 
-    # Wrong-tier product can't unlock; the right one can.
-    bad = c.post("/billing/verify", json={"job_id": job, "product_id": "export_unlock_hq", "token": "T"})
-    assert bad.status_code == 400
-    assert c.post("/billing/verify", json={"job_id": job, "product_id": "export_unlock", "token": "T"}).json() == {"paid": True}
-    s = c.get(f"/jobs/{job}").json()
+    # Paid up front, so downloads are available as soon as it's done.
     glb = c.get(_path(s["download"]["glb"])).content
     stl = c.get(_path(s["download"]["stl"])).content
     assert glb[:4] == b"glTF" and len(stl) > 500
@@ -209,23 +211,37 @@ def test_hq_needs_20_photos_and_reports_failure(client, monkeypatch):
     import processor
     fake = FakeProvider(outcome="failed", polls_before_done=0)
     c = _tier_client(client, monkeypatch, fake)
-    few = _new_real_job(c, 12)
-    r = c.post(f"/jobs/{few}/process", json={"tier": "hq"})
+    few = _new_real_job(c, 12, tier="hq")
+    # Too few photos: the purchase is refused, so the app never acknowledges it (Play refunds).
+    r = c.post("/billing/verify", json={"job_id": few, "product_id": "scan_hq", "token": "T0"})
     assert r.status_code == 400 and "20" in r.json()["detail"]
 
-    job = _new_real_job(c, 20)
-    assert c.post(f"/jobs/{job}/process", json={"tier": "hq"}).json() == {"status": "queued"}
+    job = _new_real_job(c, 20, tier="hq")
+    assert c.post("/billing/verify", json={"job_id": job, "product_id": "scan_hq", "token": "T1"}).status_code == 200
+    assert c.post(f"/jobs/{job}/process").json() == {"status": "queued"}
     processor.run_once()
     processor.run_once()
     s = c.get(f"/jobs/{job}").json()
     assert s["status"] == "failed" and "service said no" in s["error"]
-    assert s["export_product_id"] == "export_unlock_hq"
+    assert s["export_product_id"] == "scan_hq"
 
 
 def test_unconfigured_tier_rejected(client):
+    assert client.post("/jobs", json={"tier": "hq"}).status_code == 400
     job = _new_job(client)
     r = client.post(f"/jobs/{job}/process", json={"tier": "hq"})
     assert r.status_code == 400
+
+
+def test_budget_tier_uses_trellis(client, monkeypatch):
+    import config
+    import providers
+    monkeypatch.setattr(config, "FAL_KEY", "fk")
+    monkeypatch.setattr(config, "TRIPO_API_KEY", "")
+    assert isinstance(providers.provider_for("basic"), providers.FalTrellis)
+    assert providers.provider_for("quick") is None
+    t = client.get("/tiers").json()["tiers"]
+    assert [x["id"] for x in t] == ["basic"] and t[0]["export_product_id"] == "scan_basic"
 
 
 def test_pick_views_spreads_round_the_loop(tmp_path):

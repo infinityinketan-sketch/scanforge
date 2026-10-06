@@ -6,8 +6,9 @@ Google Play purchase per scan.
 
 The app offers two ways to build the model (only those whose API key is set on the server):
 
-- **Quick AI model**: a generative service (Tripo, or open-source TRELLIS via fal.ai) builds a clean,
-  complete model from 4 of the photos in 1–3 minutes. Shape details are approximated.
+- **Budget AI model**: open-source TRELLIS (via fal.ai) builds a rough model from 4 photos, ~$0.02.
+- **Quick AI model**: Tripo builds a clean, complete textured model from 4 of the photos in 1–3
+  minutes, ~$0.30. Shape details are approximated.
 - **High-accuracy scan**: KIRI Engine photogrammetry from all photos, with automatic background
   removal. 10–40 minutes, about $1 per scan.
 
@@ -58,10 +59,11 @@ python -m pytest tests     # end-to-end API tests, no GPU / Play needed
 |---|---|---|
 | `SECRET_KEY` | **yes** | Signs every URL; also the admin key for `/manifest` and `/dev-pay` |
 | `API_BASE` | **yes** | Public URL of this backend (the GPU worker calls back to it) |
-| `TRIPO_API_KEY` | for **Quick AI** | Tripo multiview-to-model (~$0.30/model). Or `FAL_KEY` for fal.ai TRELLIS (open source, ~$0.02) |
+| `FAL_KEY` | for **Budget AI** | fal.ai TRELLIS multi-image (open source, ~$0.02/model) |
+| `TRIPO_API_KEY` | for **Quick AI** | Tripo multiview-to-model (~$0.30/model) |
 | `KIRI_API_KEY` | for **High-accuracy** | KIRI Engine Photo Scan with background removal (~$1/scan, needs 20+ photos). `KIRI_SCAN=featureless` for shiny objects |
 | `DEFAULT_TIER` | | Used when the app doesn't choose. Default `quick` |
-| `TIER_PRODUCTS` | | Export product per tier. Default `quick=export_unlock,hq=export_unlock_hq` |
+| `TIER_PRODUCTS` | | Play product per option, bought **before** processing. Default `basic=scan_basic,quick=scan_quick,hq=scan_hq` |
 | `RUNPOD_API_KEY`, `RUNPOD_ENDPOINT_ID` | optional | Self-hosted GPU pipeline. Without them, self-hosted jobs wait for a manual/Colab worker |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` (or `_PATH`) | for real payments | Service account with Play Console "View financial data" |
 | `PLAY_PACKAGE_NAME` | | Default `com.scanforge.app` |
@@ -85,7 +87,8 @@ requires CUDA, and Ubuntu's `apt install colmap` is built without it.
 
 ## Play Console setup
 
-1. Create a one-time in-app product with id `export_unlock` (or whatever you pass as
-   `exportProductId` / `EXPORT_PRODUCT_IDS`).
+1. Create one-time (consumable) in-app products `scan_basic`, `scan_quick` and `scan_hq`, priced
+   per option. Each scan is bought before processing; a purchase the backend refuses is never
+   acknowledged, so Play refunds it automatically. (`export_unlock` is only for the self-hosted pipeline.)
 2. Link a Google Cloud service account under *Users and permissions* and give its JSON to the backend.
 3. Billing only works for builds installed from a Play testing track, signed with the upload key.

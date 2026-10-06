@@ -208,7 +208,7 @@ class CaptureActivity : ComponentActivity() {
         lifecycleScope.launch {
             try {
                 val id = withContext(Dispatchers.IO) {
-                    val job = Api.scan.createJob()
+                    val job = Api.scan.createJob(CreateRequest(tier))
                     val parts = shots.map {
                         MultipartBody.Part.createFormData(
                             "photos", it.name, it.asRequestBody("image/jpeg".toMediaType())
@@ -216,13 +216,17 @@ class CaptureActivity : ComponentActivity() {
                     }
                     val up = Api.scan.uploadPhotos(job.job_id, parts)
                     if (!up.isSuccessful) error("upload rejected (HTTP ${up.code()})")
-                    val proc = Api.scan.process(job.job_id, ProcessRequest(tier))
-                    if (!proc.isSuccessful) {
-                        error(proc.errorBody()?.string()?.take(200) ?: "HTTP ${proc.code()}")
+                    // With a chosen option the scan is paid for on the next screen, which then
+                    // starts processing. Without one (server has no services) start right away.
+                    if (tier == null) {
+                        val proc = Api.scan.process(job.job_id, ProcessRequest(null))
+                        if (!proc.isSuccessful) {
+                            error(proc.errorBody()?.string()?.take(200) ?: "HTTP ${proc.code()}")
+                        }
                     }
                     job.job_id
                 }
-                JobStore.add(this@CaptureActivity, LocalJob(id, System.currentTimeMillis(), "queued"))
+                JobStore.add(this@CaptureActivity, LocalJob(id, System.currentTimeMillis(), if (tier == null) "queued" else "created"))
                 shots.forEach { it.delete() }
                 startActivity(
                     Intent(this@CaptureActivity, ResultActivity::class.java).putExtra("jobId", id)

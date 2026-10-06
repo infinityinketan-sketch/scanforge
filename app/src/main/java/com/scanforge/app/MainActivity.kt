@@ -45,7 +45,7 @@ class MainActivity : Activity() {
                 val label = when (job.lastStatus) {
                     "done" -> "ready"
                     "failed" -> "failed"
-                    "created" -> "uploading"
+                    "created" -> "awaiting payment"
                     else -> "processing"
                 }
                 "Scan ${fmt.format(Date(job.createdAt))}  ·  $label"

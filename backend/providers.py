@@ -7,9 +7,10 @@ processor thread, never in a request):
     poll(task)       -> Poll      running (with progress), success (with a model URL) or failed
     fetch(url, dest) -> None      download the finished model as a GLB to `dest`
 
-Tiers:
-    quick  Tripo multiview-to-model (or fal.ai TRELLIS, open source): ~1–3 min, shape is AI-generated
-    hq     KIRI Engine Photo Scan: real photogrammetry with background removal, ~$1/scan
+Tiers (each paid before processing starts):
+    basic  fal.ai TRELLIS (open source): ~$0.02, AI-generated shape, lower fidelity
+    quick  Tripo multiview-to-model: ~$0.30, AI-generated shape, clean textured model
+    hq     KIRI Engine Photo Scan: ~$1, real photogrammetry with background removal
 """
 from __future__ import annotations
 
@@ -244,6 +245,13 @@ def _download(url: str, dest: Path):
 
 # ---------- tier registry ----------
 TIERS = {
+    "basic": {
+        "name": "Budget AI model",
+        "detail": "About 1 minute. Open-source AI (TRELLIS) builds a rough model from 4 of your "
+                  "photos; cheapest option, simplest shapes and textures.",
+        "min_photos": 8,
+        "timeout": 1200,
+    },
     "quick": {
         "name": "Quick AI model",
         "detail": "About 2 minutes. AI builds a clean, complete model from 4 of your photos; "
@@ -263,13 +271,10 @@ TIERS = {
 
 def provider_for(tier: str):
     """The configured provider for a tier, or None if its API key isn't set."""
+    if tier == "basic":
+        return FalTrellis(config.FAL_KEY) if config.FAL_KEY else None
     if tier == "quick":
-        choice = config.QUICK_PROVIDER
-        if choice in ("", "tripo") and config.TRIPO_API_KEY:
-            return Tripo(config.TRIPO_API_KEY)
-        if choice in ("", "fal_trellis") and config.FAL_KEY:
-            return FalTrellis(config.FAL_KEY)
-        return None
+        return Tripo(config.TRIPO_API_KEY) if config.TRIPO_API_KEY else None
     if tier == "hq":
         return Kiri(config.KIRI_API_KEY) if config.KIRI_API_KEY else None
     return None

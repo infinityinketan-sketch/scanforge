@@ -45,7 +45,7 @@ class BillingManager(
         client.startConnection(object : BillingClientStateListener {
             override fun onBillingSetupFinished(result: BillingResult) {
                 if (result.responseCode != BillingClient.BillingResponseCode.OK) {
-                    fail("Google Play billing unavailable (${result.debugMessage})")
+                    failOrTestBuild("Google Play billing unavailable (${result.debugMessage})")
                     return
                 }
                 settleOwnedThenBuy()
@@ -84,7 +84,7 @@ class BillingManager(
         client.queryProductDetailsAsync(params) { result, details ->
             val pd = details.firstOrNull()
             if (result.responseCode != BillingClient.BillingResponseCode.OK || pd == null) {
-                activity.runOnUiThread { fail("Export product not found in Play Console") }
+                activity.runOnUiThread { failOrTestBuild("Product $productId not found in Play Console") }
                 return@queryProductDetailsAsync
             }
             val flow = BillingFlowParams.newBuilder()
@@ -135,6 +135,29 @@ class BillingManager(
     }
 
     private fun succeed() = done(true)
+
+    /**
+     * Sideloaded test builds can't use Play Billing. In debug builds only, ask the backend to
+     * accept a test purchase; it does so only while ALLOW_DEV_BILLING=1 (never in production).
+     */
+    private fun failOrTestBuild(msg: String) {
+        if (!BuildConfig.DEBUG) return fail(msg)
+        activity.lifecycleScope.launch {
+            val ok = try {
+                withContext(Dispatchers.IO) {
+                    Api.scan.verify(VerifyRequest(jobId, productId, "test-build-$jobId")).paid
+                }
+            } catch (_: Exception) {
+                false
+            }
+            if (ok) {
+                toast("Test build: payment skipped")
+                succeed()
+            } else {
+                fail(msg)
+            }
+        }
+    }
 
     private fun fail(msg: String) {
         toast(msg)

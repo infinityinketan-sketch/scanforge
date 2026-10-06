@@ -22,6 +22,9 @@ class ResultActivity : ComponentActivity() {
     private lateinit var jobId: String
     private lateinit var statusText: TextView
     private lateinit var unlockBtn: Button
+    private lateinit var payBtn: Button
+    private var starting = false
+    private var autoStartTried = false
     private lateinit var glbBtn: Button
     private lateinit var stlBtn: Button
     private lateinit var previewBtn: Button
@@ -37,16 +40,26 @@ class ResultActivity : ComponentActivity() {
         }
         statusText = TextView(this).apply { textSize = 16f }
         unlockBtn = Button(this).apply { text = "Unlock export · one-time purchase" }
+        payBtn = Button(this).apply { text = "Pay & build my model" }
         glbBtn = Button(this).apply { text = "Download GLB (for Blender)" }
         stlBtn = Button(this).apply { text = "Download STL (for 3D printer)" }
         previewBtn = Button(this).apply { text = "View 3D preview" }
         root.addView(statusText)
+        root.addView(payBtn)
         root.addView(unlockBtn)
         root.addView(glbBtn)
         root.addView(stlBtn)
         root.addView(previewBtn)
         setContentView(root)
 
+        payBtn.setOnClickListener {
+            payBtn.isEnabled = false
+            val product = current?.export_product_id ?: BuildConfig.EXPORT_PRODUCT_ID
+            BillingManager(this, jobId, product) { ok ->
+                payBtn.isEnabled = true
+                if (ok) startProcessing()
+            }.launchExportUnlock()
+        }
         unlockBtn.setOnClickListener {
             unlockBtn.isEnabled = false
             val product = current?.export_product_id ?: BuildConfig.EXPORT_PRODUCT_ID
@@ -83,6 +96,23 @@ class ResultActivity : ComponentActivity() {
         }
     }
 
+    /** Paid (or test build): ask the server to start building the model. */
+    private fun startProcessing() {
+        if (starting) return
+        starting = true
+        lifecycleScope.launch {
+            try {
+                val r = withContext(Dispatchers.IO) { Api.scan.process(jobId, ProcessRequest(null)) }
+                if (!r.isSuccessful) toast("Couldn't start: ${r.errorBody()?.string()?.take(200)}")
+                refresh()
+            } catch (e: Exception) {
+                toast("Couldn't start: ${e.message}")
+            } finally {
+                starting = false
+            }
+        }
+    }
+
     private fun refresh() = lifecycleScope.launch {
         try {
             val s = Api.scan.status(jobId)
@@ -106,9 +136,20 @@ class ResultActivity : ComponentActivity() {
             "failed" ->
                 "❌ Failed: ${s.error}\nTip: retake photos with more overlap and steady lighting."
             "done" -> if (s.paid) "✅ Ready — download below" else "✅ Model ready! Unlock to export."
+            "created" -> when {
+                s.pay_before == true && !s.paid ->
+                    "📷 ${s.n_photos} photos uploaded.\nPay to build your model; you can download it as soon as it's ready."
+                else -> "Starting…"
+            }
             else -> "Working…"
         }
-        unlockBtn.visibility = if (s.status == "done" && !s.paid) View.VISIBLE else View.GONE
+        // Paid but not started (e.g. the app closed right after paying): start it now.
+        if (s.status == "created" && s.pay_before == true && s.paid && !autoStartTried) {
+            autoStartTried = true
+            startProcessing()
+        }
+        payBtn.visibility = if (s.status == "created" && s.pay_before == true && !s.paid) View.VISIBLE else View.GONE
+        unlockBtn.visibility = if (s.status == "done" && !s.paid && s.pay_before != true) View.VISIBLE else View.GONE
         val paidReady = s.status == "done" && s.paid
         glbBtn.visibility = if (paidReady) View.VISIBLE else View.GONE
         stlBtn.visibility = glbBtn.visibility

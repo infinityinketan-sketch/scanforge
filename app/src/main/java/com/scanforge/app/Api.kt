@@ -30,6 +30,7 @@ data class JobStatus(
     val tier: String? = null,
     val progress: Int? = null,
     val export_product_id: String? = null,
+    val pay_before: Boolean? = null,   // true: buy before processing (service tiers)
 )
 
 /** A processing option offered by the server (only those with an API key configured). */
@@ -43,13 +44,14 @@ data class Tier(
 
 data class TiersResponse(val default: String?, val tiers: List<Tier>)
 data class ProcessRequest(val tier: String?)
+data class CreateRequest(val tier: String?)
 
 data class VerifyRequest(val job_id: String, val product_id: String, val token: String)
 data class VerifyResponse(val paid: Boolean)
 
 interface ScanApi {
     @POST("jobs")
-    suspend fun createJob(): CreateJobResponse
+    suspend fun createJob(@Body req: CreateRequest): CreateJobResponse
 
     @Multipart
     @POST("jobs/{id}/photos")
