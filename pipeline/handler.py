@@ -32,8 +32,57 @@ def _run(cmd):
     subprocess.run(cmd, check=True)
 
 
+def _reconstruct_pycolmap(img_dir, ws):
+    """Same steps as `colmap automatic_reconstructor`, via the pycolmap-cuda12 wheel (used on Colab)."""
+    import pycolmap
+
+    if not pycolmap.has_cuda:
+        raise RuntimeError("pycolmap has no CUDA: install pycolmap-cuda12 on a GPU runtime")
+    max_size = {"low": 1000, "medium": 1600, "high": 2400, "extreme": 3200}.get(QUALITY, 1600)
+    db = os.path.join(ws, "database.db")
+    sparse, dense = os.path.join(ws, "sparse"), os.path.join(ws, "dense")
+    os.makedirs(sparse, exist_ok=True)
+
+    print("+ features", flush=True)
+    reader = pycolmap.ImageReaderOptions()
+    reader.camera_model = "OPENCV"
+    extraction = pycolmap.FeatureExtractionOptions()
+    extraction.max_image_size = max_size * 2   # feature detection likes more pixels than stereo
+    pycolmap.extract_features(db, img_dir, camera_mode=pycolmap.CameraMode.SINGLE,
+                              reader_options=reader, extraction_options=extraction)
+    print("+ matching", flush=True)
+    pycolmap.match_exhaustive(db)
+    print("+ sparse mapping", flush=True)
+    maps = pycolmap.incremental_mapping(db, img_dir, sparse)
+    if not maps:
+        raise RuntimeError("could not match photos: retake with more overlap and texture")
+    best = max(maps, key=lambda k: maps[k].num_reg_images())
+    print(f"+ registered {maps[best].num_reg_images()} photos", flush=True)
+
+    print("+ undistort", flush=True)
+    undistort = pycolmap.UndistortCameraOptions()
+    undistort.max_image_size = max_size
+    pycolmap.undistort_images(dense, os.path.join(sparse, str(best)), img_dir,
+                              undistort_options=undistort)
+    print("+ dense stereo", flush=True)
+    pm = pycolmap.PatchMatchOptions()
+    pm.max_image_size = max_size
+    pm.geom_consistency = True
+    pycolmap.patch_match_stereo(dense, options=pm)
+    print("+ fusion", flush=True)
+    fused = os.path.join(dense, "fused.ply")
+    rec = pycolmap.stereo_fusion(fused, dense, output_type="PLY")
+    if not os.path.exists(fused) and rec is not None and rec.num_points3D():
+        rec.export_PLY(fused)
+    if not os.path.exists(fused):
+        raise RuntimeError("camera poses found but dense step produced no points")
+    return fused
+
+
 def _reconstruct(img_dir, ws):
     """COLMAP automatic reconstruction (sparse + dense). Dense stereo needs a CUDA build of COLMAP."""
+    if os.getenv("COLMAP_BACKEND") == "pycolmap":
+        return _reconstruct_pycolmap(img_dir, ws)
     _run([
         "colmap", "automatic_reconstructor",
         "--workspace_path", ws,
