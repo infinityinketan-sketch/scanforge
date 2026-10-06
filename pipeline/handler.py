@@ -103,21 +103,100 @@ def _reconstruct(img_dir, ws):
 
 
 def _write_glb(mesh, path):
-    """Write a standard binary glTF. Open3D's own .glb writer embeds the geometry as base64
-    in the JSON with no binary chunk, which many viewers (incl. Assimp) reject."""
+    """Write a standard binary glTF with vertex colours. Open3D's own .glb writer embeds the
+    geometry as base64 in the JSON with no binary chunk, which many viewers (incl. Assimp) reject."""
     import numpy as np
     import trimesh
 
+    colors = None
+    if mesh.has_vertex_colors():
+        colors = (np.clip(np.asarray(mesh.vertex_colors), 0, 1) * 255).astype(np.uint8)
     tm = trimesh.Trimesh(
         vertices=np.asarray(mesh.vertices),
         faces=np.asarray(mesh.triangles),
         vertex_normals=np.asarray(mesh.vertex_normals),
+        vertex_colors=colors,
         process=False,
     )
     tm.export(path, file_type="glb")
 
 
-def _mesh(fused_ply, out_stl, out_glb, out_preview, log):
+def _read_poses(images_bin):
+    """Camera centres and viewing directions from a COLMAP images.bin (world coordinates)."""
+    import struct
+
+    import numpy as np
+
+    poses = []
+    if not os.path.exists(images_bin):
+        return poses
+    with open(images_bin, "rb") as f:
+        (n,) = struct.unpack("<Q", f.read(8))
+        for _ in range(n):
+            _id, qw, qx, qy, qz, tx, ty, tz, _cam = struct.unpack("<I7dI", f.read(64))
+            while f.read(1) != b"\0":   # image name
+                pass
+            (npts,) = struct.unpack("<Q", f.read(8))
+            f.seek(24 * npts, 1)
+            R = np.array([
+                [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qw * qz), 2 * (qx * qz + qw * qy)],
+                [2 * (qx * qy + qw * qz), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qw * qx)],
+                [2 * (qx * qz - qw * qy), 2 * (qy * qz + qw * qx), 1 - 2 * (qx * qx + qy * qy)],
+            ])
+            poses.append((-R.T @ np.array([tx, ty, tz]), R[2]))
+    return poses
+
+
+def _isolate_object(pcd, poses, log):
+    """Keep the object the photos were aimed at; drop the table, floor and background.
+
+    Returns the cropped cloud and an 'up' vector (or None when the camera path can't tell)."""
+    import numpy as np
+
+    C = np.array([c for c, _ in poses])
+    D = np.array([d / np.linalg.norm(d) for _, d in poses])
+    # The object sits where the cameras' viewing rays (nearly) meet.
+    A = np.zeros((3, 3))
+    b = np.zeros(3)
+    for c, d in zip(C, D):
+        P = np.eye(3) - np.outer(d, d)
+        A += P
+        b += P @ c
+    target = np.linalg.lstsq(A, b, rcond=None)[0]
+    cam_dist = float(np.median(np.linalg.norm(C - target, axis=1)))
+
+    pts = np.asarray(pcd.points)
+    keep = np.linalg.norm(pts - target, axis=1) < 0.5 * cam_dist
+    if keep.sum() < 3000:
+        log.append("object crop skipped (too few points near the aim point)")
+        return pcd, None
+    obj = pcd.select_by_index(np.flatnonzero(keep))
+
+    # Cameras walked around the object lie roughly on a plane parallel to the table.
+    up = None
+    centred = C - C.mean(axis=0)
+    if len(C) >= 6:
+        _u, s, vt = np.linalg.svd(centred, full_matrices=False)
+        if s[2] < 0.5 * s[1]:            # a real loop around the object, not a straight line
+            up = vt[2] if vt[2] @ (C.mean(axis=0) - target) > 0 else -vt[2]
+
+    if up is not None:
+        # Remove the supporting surface: the largest plane facing 'up' below the object's centre.
+        diag = float(np.linalg.norm(obj.get_max_bound() - obj.get_min_bound()))
+        plane, inliers = obj.segment_plane(distance_threshold=diag / 150, ransac_n=3, num_iterations=1000)
+        n = np.asarray(plane[:3])
+        n_len = np.linalg.norm(n)
+        if abs(n @ up) / n_len > 0.9 and len(inliers) > 0.1 * len(obj.points):
+            sign = 1.0 if n @ up > 0 else -1.0
+            height = (np.asarray(obj.points) @ (n * sign) + plane[3] * sign) / n_len
+            if (target @ (n * sign) + plane[3] * sign) / n_len > 0:     # object sits above it
+                obj = obj.select_by_index(np.flatnonzero(height > diag / 100))
+                log.append("removed supporting surface")
+    log.append(f"object points: {len(obj.points)}")
+    return obj, up
+
+
+def _mesh(fused_ply, out_stl, out_glb, out_preview, log, poses=None):
     import numpy as np
     import open3d as o3d
 
@@ -126,24 +205,71 @@ def _mesh(fused_ply, out_stl, out_glb, out_preview, log):
     if len(pcd.points) < 1000:
         raise RuntimeError("too few 3D points to build a mesh")
 
+    if poses is None:
+        poses = _read_poses(os.path.join(os.path.dirname(fused_ply), "sparse", "images.bin"))
+    up = None
+    if len(poses) >= 3:
+        pcd, up = _isolate_object(pcd, poses, log)
+
     # COLMAP output has arbitrary scale, so size every parameter relative to the object.
     diag = float(np.linalg.norm(pcd.get_max_bound() - pcd.get_min_bound()))
-    voxel = diag / 600
+    voxel = diag / 500
     pcd = pcd.voxel_down_sample(voxel)
     pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
-    pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel * 5, max_nn=30))
-    pcd.orient_normals_consistent_tangent_plane(15)
+
+    # Drop floating specks: keep only clusters comparable in size to the main one.
+    labels = np.asarray(pcd.cluster_dbscan(eps=voxel * 4, min_points=10))
+    if labels.max() >= 0:
+        sizes = np.bincount(labels[labels >= 0])
+        good = np.flatnonzero(sizes >= 0.2 * sizes.max())
+        pcd = pcd.select_by_index(np.flatnonzero(np.isin(labels, good)))
+    if len(pcd.points) < 1000:
+        raise RuntimeError("too few 3D points on the object: retake with more overlap and texture")
+
+    pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel * 4, max_nn=30))
+    if len(poses) >= 3:
+        # Every surface point was seen by a camera, so its normal should face the nearest one.
+        C = np.array([c for c, _ in poses])
+        pts, nrm = np.asarray(pcd.points), np.asarray(pcd.normals)
+        nearest = np.concatenate([
+            C[np.argmin(((chunk[:, None, :] - C[None]) ** 2).sum(-1), axis=1)]
+            for chunk in np.array_split(pts, max(1, len(pts) // 50000))
+        ])
+        flip = ((nearest - pts) * nrm).sum(1) < 0
+        nrm[flip] *= -1
+        pcd.normals = o3d.utility.Vector3dVector(nrm)
+    else:
+        pcd.orient_normals_consistent_tangent_plane(15)
 
     mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-        pcd, depth=9, linear_fit=True
+        pcd, depth=10, linear_fit=True
     )
-    # Poisson invents surface where there were no points; trim the least-supported 3%.
+    # Poisson invents surface where there were no points; trim the least-supported 5%.
     densities = np.asarray(densities)
-    mesh.remove_vertices_by_mask(densities < np.quantile(densities, 0.03))
-    mesh = mesh.crop(pcd.get_axis_aligned_bounding_box())
-    mesh = mesh.filter_smooth_simple(number_of_iterations=2)
+    mesh.remove_vertices_by_mask(densities < np.quantile(densities, 0.05))
+    bbox = pcd.get_axis_aligned_bounding_box()
+    mesh = mesh.crop(bbox.scale(1.02, bbox.get_center()))
+    # Keep the main surface, drop small disconnected scraps.
+    tri_labels, tri_counts, _ = mesh.cluster_connected_triangles()
+    tri_labels, tri_counts = np.asarray(tri_labels), np.asarray(tri_counts)
+    if len(tri_counts):
+        mesh.remove_triangles_by_mask(tri_counts[tri_labels] < 0.1 * tri_counts.max())
+    mesh = mesh.filter_smooth_taubin(number_of_iterations=5)   # denoise without shrinking
     mesh.remove_degenerate_triangles()
     mesh.remove_unreferenced_vertices()
+
+    # Stand the model upright (+Y up, as glTF viewers and slicers expect), base on the ground,
+    # and size it to 100 units (mm in a slicer) since photos carry no real-world scale.
+    if up is not None:
+        y = up / np.linalg.norm(up)
+        x = np.cross([0.0, 0.0, 1.0] if abs(y[2]) < 0.9 else [1.0, 0.0, 0.0], y)
+        x /= np.linalg.norm(x)
+        mesh.rotate(np.stack([x, y, np.cross(x, y)]), center=(0, 0, 0))
+    v = np.asarray(mesh.vertices)
+    lo, hi = v.min(axis=0), v.max(axis=0)
+    mesh.translate(-np.array([(lo[0] + hi[0]) / 2, lo[1], (lo[2] + hi[2]) / 2]))
+    mesh.scale(100.0 / float((hi - lo).max()), center=(0, 0, 0))
+
     mesh.compute_vertex_normals()
     mesh.compute_triangle_normals()  # STL writer requires triangle normals
 
