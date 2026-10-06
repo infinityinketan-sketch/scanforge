@@ -154,9 +154,9 @@ def _read_poses(images_bin):
 
 
 def _isolate_object(pcd, poses, log):
-    """Keep the object the photos were aimed at; drop the table, floor and background.
+    """Keep the object the photos were aimed at; drop the floor/table and background.
 
-    Returns the cropped cloud and an 'up' vector (or None when the camera path can't tell)."""
+    Returns (cropped cloud, up vector or None, aim point)."""
     import numpy as np
 
     C = np.array([c for c, _ in poses])
@@ -175,31 +175,36 @@ def _isolate_object(pcd, poses, log):
     keep = np.linalg.norm(pts - target, axis=1) < 0.5 * cam_dist
     if keep.sum() < 3000:
         log.append("object crop skipped (too few points near the aim point)")
-        return pcd, None
+        return pcd, None, target
     obj = pcd.select_by_index(np.flatnonzero(keep))
 
-    # Cameras walked around the object lie roughly on a plane parallel to the table.
+    # Remove the supporting surface (floor/table): the dominant plane in the crop that has
+    # every camera on the same side, since photos are always taken from above it.
     up = None
-    centred = C - C.mean(axis=0)
-    if len(C) >= 6:
-        _u, s, vt = np.linalg.svd(centred, full_matrices=False)
-        if s[2] < 0.5 * s[1]:            # a real loop around the object, not a straight line
-            up = vt[2] if vt[2] @ (C.mean(axis=0) - target) > 0 else -vt[2]
-
-    if up is not None:
-        # Remove the supporting surface: the largest plane facing 'up' below the object's centre.
-        diag = float(np.linalg.norm(obj.get_max_bound() - obj.get_min_bound()))
-        plane, inliers = obj.segment_plane(distance_threshold=diag / 150, ransac_n=3, num_iterations=1000)
-        n = np.asarray(plane[:3])
-        n_len = np.linalg.norm(n)
-        if abs(n @ up) / n_len > 0.9 and len(inliers) > 0.1 * len(obj.points):
-            sign = 1.0 if n @ up > 0 else -1.0
-            height = (np.asarray(obj.points) @ (n * sign) + plane[3] * sign) / n_len
-            if (target @ (n * sign) + plane[3] * sign) / n_len > 0:     # object sits above it
-                obj = obj.select_by_index(np.flatnonzero(height > diag / 100))
-                log.append("removed supporting surface")
+    diag = float(np.linalg.norm(obj.get_max_bound() - obj.get_min_bound()))
+    plane, inliers = obj.segment_plane(distance_threshold=diag / 200, ransac_n=3, num_iterations=2000)
+    n = np.asarray(plane[:3]) / np.linalg.norm(plane[:3])
+    d = plane[3] / np.linalg.norm(plane[:3])
+    cam_side = C @ n + d
+    if (cam_side < 0).mean() > 0.5:
+        n, d, cam_side = -n, -d, -cam_side
+    share = len(inliers) / len(obj.points)
+    above = (cam_side > 0).mean()
+    if share > 0.1 and above > 0.9:
+        up = n
+        height = np.asarray(obj.points) @ n + d
+        obj = obj.select_by_index(np.flatnonzero(height > diag / 80))
+        log.append(f"removed supporting surface ({share:.0%} of points)")
+    else:
+        log.append(f"no supporting surface removed (largest plane {share:.0%} of points, "
+                   f"{above:.0%} of cameras above it)")
+        # Fall back to the camera loop for 'up': it lies roughly parallel to the floor.
+        if len(C) >= 6:
+            _u, s, vt = np.linalg.svd(C - C.mean(axis=0), full_matrices=False)
+            if s[2] < 0.5 * s[1]:
+                up = vt[2] if vt[2] @ (C.mean(axis=0) - target) > 0 else -vt[2]
     log.append(f"object points: {len(obj.points)}")
-    return obj, up
+    return obj, up, target
 
 
 def _mesh(fused_ply, out_stl, out_glb, out_preview, log, poses=None):
@@ -213,9 +218,9 @@ def _mesh(fused_ply, out_stl, out_glb, out_preview, log, poses=None):
 
     if poses is None:
         poses = _read_poses(os.path.join(os.path.dirname(fused_ply), "sparse", "images.bin"))
-    up = None
+    up = target = None
     if len(poses) >= 3:
-        pcd, up = _isolate_object(pcd, poses, log)
+        pcd, up, target = _isolate_object(pcd, poses, log)
 
     # COLMAP output has arbitrary scale, so size every parameter relative to the object.
     diag = float(np.linalg.norm(pcd.get_max_bound() - pcd.get_min_bound()))
@@ -227,7 +232,22 @@ def _mesh(fused_ply, out_stl, out_glb, out_preview, log, poses=None):
     labels = np.asarray(pcd.cluster_dbscan(eps=voxel * 4, min_points=10))
     if labels.max() >= 0:
         sizes = np.bincount(labels[labels >= 0])
-        good = np.flatnonzero(sizes >= 0.2 * sizes.max())
+        main = int(np.argmax(sizes))
+        if target is not None:
+            # The object is the cluster nearest the aim point, even if leftover floor is bigger.
+            pts = np.asarray(pcd.points)
+            dist = np.linalg.norm(pts - target, axis=1)
+            closest = [dist[labels == k].min() if s >= 0.05 * sizes.max() else np.inf
+                       for k, s in enumerate(sizes)]
+            main = int(np.argmin(closest))
+        # Keep other sizeable pieces only if they sit next to the object (e.g. a separated limb).
+        pts = np.asarray(pcd.points)
+        main_pts = pts[labels == main]
+        centre = main_pts.mean(axis=0)
+        reach = float(np.linalg.norm(main_pts.max(axis=0) - main_pts.min(axis=0)))
+        good = [k for k, s in enumerate(sizes)
+                if k == main or (s >= 0.2 * sizes[main]
+                                 and np.linalg.norm(pts[labels == k] - centre, axis=1).min() < 0.75 * reach)]
         pcd = pcd.select_by_index(np.flatnonzero(np.isin(labels, good)))
     if len(pcd.points) < 1000:
         raise RuntimeError("too few 3D points on the object: retake with more overlap and texture")
