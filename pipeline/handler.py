@@ -51,13 +51,19 @@ def _reconstruct_pycolmap(img_dir, ws):
     pycolmap.extract_features(db, img_dir, camera_mode=pycolmap.CameraMode.SINGLE,
                               reader_options=reader, extraction_options=extraction)
     print("+ matching", flush=True)
-    pycolmap.match_exhaustive(db)
+    matching = pycolmap.FeatureMatchingOptions()
+    matching.guided_matching = True        # recovers more matches on plain, low-texture surfaces
+    pycolmap.match_exhaustive(db, matching_options=matching)
     print("+ sparse mapping", flush=True)
-    maps = pycolmap.incremental_mapping(db, img_dir, sparse)
+    mapping = pycolmap.IncrementalPipelineOptions()
+    mapping.min_num_matches = 10           # default 15 drops photos of weakly textured objects
+    mapping.mapper.abs_pose_min_num_inliers = 20
+    maps = pycolmap.incremental_mapping(db, img_dir, sparse, options=mapping)
+    n_photos = len(os.listdir(img_dir))
     if not maps:
         raise RuntimeError("could not match photos: retake with more overlap and texture")
     best = max(maps, key=lambda k: maps[k].num_reg_images())
-    print(f"+ registered {maps[best].num_reg_images()} photos", flush=True)
+    print(f"+ placed {maps[best].num_reg_images()} of {n_photos} photos", flush=True)
 
     print("+ undistort", flush=True)
     undistort = pycolmap.UndistortCameraOptions()
@@ -244,9 +250,10 @@ def _mesh(fused_ply, out_stl, out_glb, out_preview, log, poses=None):
     mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
         pcd, depth=10, linear_fit=True
     )
-    # Poisson invents surface where there were no points; trim the least-supported 5%.
+    # Poisson invents surface where there were no points; trim only the least-supported 2%,
+    # since the background is already gone and heavier trimming leaves holes in the object.
     densities = np.asarray(densities)
-    mesh.remove_vertices_by_mask(densities < np.quantile(densities, 0.05))
+    mesh.remove_vertices_by_mask(densities < np.quantile(densities, 0.02))
     bbox = pcd.get_axis_aligned_bounding_box()
     mesh = mesh.crop(bbox.scale(1.02, bbox.get_center()))
     # Keep the main surface, drop small disconnected scraps.
@@ -298,9 +305,11 @@ def handler(event):
         fused = _reconstruct(img_dir, ws)
         out = os.path.join(ws, "out")
         os.makedirs(out, exist_ok=True)
+        print("+ meshing", flush=True)
         nv, nt = _mesh(fused, f"{out}/model.stl", f"{out}/model.glb",
                        f"{out}/preview.glb", log_lines)
         log_lines.append(f"mesh: {nv} verts / {nt} tris")
+        print("+ " + " | ".join(log_lines), flush=True)
 
         # Field names must match the backend's /result parameters exactly.
         names = {"stl": "model.stl", "glb": "model.glb", "preview": "preview.glb"}
