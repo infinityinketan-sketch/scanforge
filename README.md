@@ -27,7 +27,14 @@ Locally (Android Studio, or Gradle 8.7 + JDK 17 + Android SDK 34):
 gradle :app:assembleDebug -PapiBase=https://scanforge-api.onrender.com -PexportProductId=export_unlock
 ```
 
-Without `-PapiBase` the app talks to `http://10.0.2.2:8000` (your PC from the emulator).
+Without `-PapiBase` the app talks to the Colab test backend below.
+
+## Testing on Colab (no server or RunPod needed)
+
+Open [`colab/scanforge_colab.ipynb`](https://colab.research.google.com/github/infinityinketan-sketch/scanforge/blob/main/colab/scanforge_colab.ipynb)
+in Colab on a T4 GPU and run all cells. It starts the backend, exposes it on the ngrok domain
+`chamber-barber-dole.ngrok-free.dev` (the APK's default), and runs COLMAP on Colab's GPU.
+Add your ngrok token as a Colab secret named `NGROK_TOKEN`. Everything is lost when the Colab session ends.
 
 ## Backend
 

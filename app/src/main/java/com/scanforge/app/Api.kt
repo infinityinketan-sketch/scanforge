@@ -62,6 +62,10 @@ object Api {
             level = HttpLoggingInterceptor.Level.BASIC
         }
         val client = OkHttpClient.Builder()
+            // Free ngrok tunnels can answer with a browser-warning page instead of the API.
+            .addInterceptor { chain ->
+                chain.proceed(chain.request().newBuilder().header("ngrok-skip-browser-warning", "1").build())
+            }
             .addInterceptor(logging)
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(120, TimeUnit.SECONDS)

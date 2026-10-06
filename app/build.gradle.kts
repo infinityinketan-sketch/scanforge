@@ -4,7 +4,7 @@ plugins {
 }
 
 // Override at build time:  ./gradlew :app:assembleDebug -PapiBase=https://your-api -PexportProductId=export_unlock
-val apiBase: String = (project.findProperty("apiBase") as String?) ?: "http://10.0.2.2:8000"
+val apiBase: String = (project.findProperty("apiBase") as String?) ?: "https://chamber-barber-dole.ngrok-free.dev"
 val exportProductId: String = (project.findProperty("exportProductId") as String?) ?: "export_unlock"
 
 android {

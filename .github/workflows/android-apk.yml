@@ -6,7 +6,7 @@ on:
     inputs:
       api_base:
         description: "Backend URL baked into the APK"
-        default: "https://scanforge-api.onrender.com"
+        default: "https://chamber-barber-dole.ngrok-free.dev"
 
 jobs:
   apk:
@@ -28,7 +28,7 @@ jobs:
         run: |
           set -o pipefail
           gradle :app:assembleDebug --console=plain \
-            -PapiBase=${{ inputs.api_base || 'https://scanforge-api.onrender.com' }} 2>&1 | tee build.log
+            -PapiBase=${{ inputs.api_base || 'https://chamber-barber-dole.ngrok-free.dev' }} 2>&1 | tee build.log
 
       # Surface compiler/Gradle errors on the run page instead of only "exit code 1".
       - name: Report build errors
