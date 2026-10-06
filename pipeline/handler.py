@@ -250,7 +250,8 @@ def _mesh(fused_ply, out_stl, out_glb, out_preview, log, poses=None):
                                  and np.linalg.norm(pts[labels == k] - centre, axis=1).min() < 0.75 * reach)]
         pcd = pcd.select_by_index(np.flatnonzero(np.isin(labels, good)))
     if len(pcd.points) < 1000:
-        raise RuntimeError("too few 3D points on the object: retake with more overlap and texture")
+        raise RuntimeError("too few 3D points on the object: retake with more overlap and texture "
+                           f"({'; '.join(log)})")
 
     pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel * 4, max_nn=30))
     if len(poses) >= 3:
@@ -311,6 +312,20 @@ def _mesh(fused_ply, out_stl, out_glb, out_preview, log, poses=None):
     return len(mesh.vertices), len(mesh.triangles)
 
 
+def _keep_points(fused, job_id):
+    """Save the dense points + camera poses (KEEP_DIR, set on Colab) so the mesh step can be
+    rerun in minutes without repeating the hour-long reconstruction."""
+    keep = os.getenv("KEEP_DIR")
+    if not keep:
+        return
+    dst = os.path.join(keep, job_id)
+    os.makedirs(os.path.join(dst, "sparse"), exist_ok=True)
+    shutil.copy(fused, os.path.join(dst, "fused.ply"))
+    poses = os.path.join(os.path.dirname(fused), "sparse", "images.bin")
+    if os.path.exists(poses):
+        shutil.copy(poses, os.path.join(dst, "sparse", "images.bin"))
+
+
 def handler(event):
     inp = event.get("input", {})
     job_id = inp["job_id"]
@@ -323,6 +338,7 @@ def handler(event):
         _download(photo_urls, img_dir)
         log_lines.append(f"photos: {len(photo_urls)}")
         fused = _reconstruct(img_dir, ws)
+        _keep_points(fused, job_id)
         out = os.path.join(ws, "out")
         os.makedirs(out, exist_ok=True)
         print("+ meshing", flush=True)
