@@ -30,6 +30,7 @@ import kotlinx.coroutines.withContext
 class BillingManager(
     private val activity: ComponentActivity,
     private val jobId: String,
+    private val productId: String,
     private val onResult: (Boolean) -> Unit,
 ) : PurchasesUpdatedListener {
 
@@ -76,7 +77,7 @@ class BillingManager(
 
     private fun queryAndLaunch() {
         val product = QueryProductDetailsParams.Product.newBuilder()
-            .setProductId(BuildConfig.EXPORT_PRODUCT_ID)
+            .setProductId(productId)
             .setProductType(BillingClient.ProductType.INAPP)
             .build()
         val params = QueryProductDetailsParams.newBuilder().setProductList(listOf(product)).build()

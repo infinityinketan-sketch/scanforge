@@ -1,6 +1,7 @@
 package com.scanforge.app
 
 import android.Manifest
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -42,6 +43,7 @@ class CaptureActivity : ComponentActivity() {
     private lateinit var cameraExecutor: ExecutorService
 
     private val shots = mutableListOf<File>()
+    private var tiers: List<Tier> = emptyList()   // processing options the server offers
     private val handler = Handler(Looper.getMainLooper())
     private var capturing = false
     private var busy = false
@@ -86,6 +88,7 @@ class CaptureActivity : ComponentActivity() {
         setContentView(root)
 
         btn.setOnClickListener { toggle() }
+        loadTiers()
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             != PackageManager.PERMISSION_GRANTED
@@ -93,6 +96,14 @@ class CaptureActivity : ComponentActivity() {
             cameraPermission.launch(Manifest.permission.CAMERA)
         } else {
             startCamera()
+        }
+    }
+
+    private fun loadTiers() = lifecycleScope.launch {
+        tiers = try {
+            withContext(Dispatchers.IO) { Api.scan.tiers().tiers }
+        } catch (_: Exception) {
+            emptyList()   // older server or offline: upload without choosing, server uses its default
         }
     }
 
@@ -118,14 +129,14 @@ class CaptureActivity : ComponentActivity() {
             Toast.makeText(this, "Camera is still starting…", Toast.LENGTH_SHORT).show()
             return
         }
-        if (!capturing && shots.size >= MIN_SHOTS) { upload(); return }
+        if (!capturing && shots.size >= MIN_SHOTS) { chooseTierThenUpload(); return }
         capturing = !capturing
         btn.text = if (capturing) "■ Stop & upload" else "▶ Start scanning"
         if (capturing) {
             handler.post(shotLoop)
         } else {
             handler.removeCallbacks(shotLoop)
-            if (shots.size >= MIN_SHOTS) upload()
+            if (shots.size >= MIN_SHOTS) chooseTierThenUpload()
             else Toast.makeText(this, "Need at least $MIN_SHOTS photos", Toast.LENGTH_LONG).show()
         }
         updateUi()
@@ -162,13 +173,35 @@ class CaptureActivity : ComponentActivity() {
 
     private fun updateUi() {
         ring.progress = shots.size
-        info.text = "${shots.size} photos · walk slowly around the object, 2–3 full circles, steady light"
+        info.text = "${shots.size} photos · start facing the object's front, then walk slowly around it " +
+            "moving to your right. 1–2 full circles, steady light. High-accuracy needs 20+ photos."
         if (!capturing && !busy) {
             btn.text = if (shots.size >= MIN_SHOTS) "⬆ Upload ${shots.size} photos" else "▶ Start scanning"
         }
     }
 
-    private fun upload() {
+    /** Let the user pick Quick AI vs High-accuracy when the server offers more than one. */
+    private fun chooseTierThenUpload() {
+        if (tiers.size <= 1) return upload(tiers.firstOrNull()?.id)
+        val labels = tiers.map { t ->
+            val short = if (shots.size < t.min_photos) "\n⚠ needs ${t.min_photos}+ photos (you have ${shots.size})" else ""
+            "${t.name}\n${t.detail}$short"
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("How should we build your model?")
+            .setItems(labels) { _, which ->
+                val t = tiers[which]
+                if (shots.size < t.min_photos) {
+                    Toast.makeText(this, "Take at least ${t.min_photos} photos for ${t.name}", Toast.LENGTH_LONG).show()
+                } else {
+                    upload(t.id)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun upload(tier: String?) {
         busy = true
         btn.isEnabled = false
         btn.text = "Uploading…"
@@ -183,7 +216,7 @@ class CaptureActivity : ComponentActivity() {
                     }
                     val up = Api.scan.uploadPhotos(job.job_id, parts)
                     if (!up.isSuccessful) error("upload rejected (HTTP ${up.code()})")
-                    val proc = Api.scan.process(job.job_id)
+                    val proc = Api.scan.process(job.job_id, ProcessRequest(tier))
                     if (!proc.isSuccessful) {
                         error(proc.errorBody()?.string()?.take(200) ?: "HTTP ${proc.code()}")
                     }

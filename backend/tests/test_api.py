@@ -16,8 +16,11 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "test-secret")
     monkeypatch.setenv("API_BASE", "http://testserver")
     monkeypatch.setenv("ALLOW_DEV_BILLING", "1")  # no service account → dev verification
+    monkeypatch.setenv("SCANFORGE_NO_PROCESSOR", "1")  # tests drive processor.run_once() themselves
     monkeypatch.delenv("RUNPOD_ENDPOINT_ID", raising=False)
-    for m in ("config", "db", "billing", "main"):
+    for k in ("TRIPO_API_KEY", "FAL_KEY", "KIRI_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    for m in ("config", "db", "billing", "providers", "processor", "main"):
         sys.modules.pop(m, None)
     main = importlib.import_module("main")
     from fastapi.testclient import TestClient
@@ -104,3 +107,133 @@ def test_signatures_are_purpose_bound(client):
 def test_too_few_photos(client):
     job = _new_job(client, n=3)
     assert client.post(f"/jobs/{job}/process").status_code == 400
+
+
+# ---------- provider tiers (fake services, no network) ----------
+def _real_jpeg(seed):
+    import io
+    from PIL import Image
+    img = Image.effect_noise((64, 48), 40 + seed).convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, "JPEG")
+    return buf.getvalue()
+
+
+def _textured_glb(path):
+    import numpy as np
+    import trimesh
+    from PIL import Image
+    m = trimesh.creation.box()
+    uv = np.random.default_rng(0).random((len(m.vertices), 2))
+    tex = Image.new("RGB", (1024, 1024), (200, 80, 40))
+    m.visual = trimesh.visual.TextureVisuals(uv=uv, material=trimesh.visual.material.PBRMaterial(baseColorTexture=tex))
+    m.export(path)
+
+
+class FakeProvider:
+    name = "fake"
+
+    def __init__(self, outcome="success", polls_before_done=1):
+        self.outcome, self.left, self.submitted = outcome, polls_before_done, None
+
+    def submit(self, photos):
+        self.submitted = photos
+        return "task-1"
+
+    def poll(self, task):
+        import providers
+        assert task == "task-1"
+        if self.left > 0:
+            self.left -= 1
+            return providers.Poll("running", 40)
+        if self.outcome == "failed":
+            return providers.Poll("failed", error="service said no")
+        return providers.Poll("success", 100, url="https://example/model.glb")
+
+    def fetch(self, url, dest):
+        _textured_glb(dest)
+
+
+def _tier_client(client, monkeypatch, fake, tiers=("quick", "hq")):
+    import providers
+    monkeypatch.setattr(providers, "provider_for", lambda t: fake if t in tiers else None)
+    return client
+
+
+def _new_real_job(c, n):
+    job = c.post("/jobs").json()["job_id"]
+    files = [("photos", (f"p{i}.jpg", _real_jpeg(i), "image/jpeg")) for i in range(n)]
+    c.post(f"/jobs/{job}/photos", files=files)
+    return job
+
+
+def test_tiers_listed_only_when_configured(client, monkeypatch):
+    assert client.get("/tiers").json()["tiers"] == []
+    fake = FakeProvider()
+    _tier_client(client, monkeypatch, fake, tiers=("quick",))
+    t = client.get("/tiers").json()["tiers"]
+    assert [x["id"] for x in t] == ["quick"] and t[0]["export_product_id"] == "export_unlock"
+
+
+def test_quick_tier_end_to_end(client, monkeypatch):
+    import processor
+    fake = FakeProvider(polls_before_done=1)
+    c = _tier_client(client, monkeypatch, fake)
+    job = _new_real_job(c, 12)
+    assert c.post(f"/jobs/{job}/process", json={"tier": "quick"}).json() == {"status": "queued"}
+
+    processor.run_once()                       # submit
+    assert len(fake.submitted) == 12
+    s = c.get(f"/jobs/{job}").json()
+    assert s["status"] == "processing" and s["tier"] == "quick"
+    processor.run_once()                       # still running
+    assert c.get(f"/jobs/{job}").json()["progress"] == 40
+    processor.run_once()                       # done: download + STL + preview
+    s = c.get(f"/jobs/{job}").json()
+    assert s["status"] == "done", s
+    preview = c.get(_path(s["preview_url"])).content
+    assert preview[:4] == b"glTF"
+
+    # Wrong-tier product can't unlock; the right one can.
+    bad = c.post("/billing/verify", json={"job_id": job, "product_id": "export_unlock_hq", "token": "T"})
+    assert bad.status_code == 400
+    assert c.post("/billing/verify", json={"job_id": job, "product_id": "export_unlock", "token": "T"}).json() == {"paid": True}
+    s = c.get(f"/jobs/{job}").json()
+    glb = c.get(_path(s["download"]["glb"])).content
+    stl = c.get(_path(s["download"]["stl"])).content
+    assert glb[:4] == b"glTF" and len(stl) > 500
+    assert len(preview) < len(glb)             # preview carries a smaller texture
+
+
+def test_hq_needs_20_photos_and_reports_failure(client, monkeypatch):
+    import processor
+    fake = FakeProvider(outcome="failed", polls_before_done=0)
+    c = _tier_client(client, monkeypatch, fake)
+    few = _new_real_job(c, 12)
+    r = c.post(f"/jobs/{few}/process", json={"tier": "hq"})
+    assert r.status_code == 400 and "20" in r.json()["detail"]
+
+    job = _new_real_job(c, 20)
+    assert c.post(f"/jobs/{job}/process", json={"tier": "hq"}).json() == {"status": "queued"}
+    processor.run_once()
+    processor.run_once()
+    s = c.get(f"/jobs/{job}").json()
+    assert s["status"] == "failed" and "service said no" in s["error"]
+    assert s["export_product_id"] == "export_unlock_hq"
+
+
+def test_unconfigured_tier_rejected(client):
+    job = _new_job(client)
+    r = client.post(f"/jobs/{job}/process", json={"tier": "hq"})
+    assert r.status_code == 400
+
+
+def test_pick_views_spreads_round_the_loop(tmp_path):
+    import providers
+    paths = []
+    for i in range(40):
+        p = tmp_path / f"{i:03d}.jpg"
+        p.write_bytes(_real_jpeg(i))
+        paths.append(p)
+    views = providers.pick_views(paths, 4, 2048)
+    assert len(views) == 4 and all(v[:2] == b"\xff\xd8" for v in views)

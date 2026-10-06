@@ -32,6 +32,12 @@ def init():
             finished REAL,
             error TEXT)"""
     )
+    # Columns added after the first release; add them to existing databases.
+    have = {r["name"] for r in c.execute("PRAGMA table_info(jobs)")}
+    for col, decl in (("tier", "TEXT"), ("provider", "TEXT"), ("provider_task", "TEXT"),
+                      ("progress", "INTEGER DEFAULT 0")):
+        if col not in have:
+            c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {decl}")
     # A Play purchase token may unlock exactly one job.
     c.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS jobs_purchase_token ON jobs(purchase_token) "
@@ -76,3 +82,11 @@ def claim_status(job_id, from_statuses, to_status, **fields):
     )
     c.commit()
     return cur.rowcount == 1
+
+
+def jobs_in(statuses, provider_only=True):
+    marks = ",".join("?" for _ in statuses)
+    q = f"SELECT * FROM jobs WHERE status IN ({marks})"
+    if provider_only:
+        q += " AND provider IS NOT NULL"
+    return [dict(r) for r in _conn().execute(q + " ORDER BY created_at", tuple(statuses)).fetchall()]

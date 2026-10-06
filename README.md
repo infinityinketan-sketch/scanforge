@@ -4,6 +4,15 @@ Photogrammetry 3D scanning: walk around an object with an Android phone, and get
 back as **GLB** (Blender) and **STL** (3D printing). Preview is free; export is a one-time
 Google Play purchase per scan.
 
+The app offers two ways to build the model (only those whose API key is set on the server):
+
+- **Quick AI model**: a generative service (Tripo, or open-source TRELLIS via fal.ai) builds a clean,
+  complete model from 4 of the photos in 1–3 minutes. Shape details are approximated.
+- **High-accuracy scan**: KIRI Engine photogrammetry from all photos, with automatic background
+  removal. 10–40 minutes, about $1 per scan.
+
+The original self-hosted pipeline (below) is still available as a fallback.
+
 ```
 Android app ──photos──▶ FastAPI backend ──job──▶ RunPod GPU worker (COLMAP + Open3D)
      ▲                       │   ▲                         │
@@ -49,7 +58,11 @@ python -m pytest tests     # end-to-end API tests, no GPU / Play needed
 |---|---|---|
 | `SECRET_KEY` | **yes** | Signs every URL; also the admin key for `/manifest` and `/dev-pay` |
 | `API_BASE` | **yes** | Public URL of this backend (the GPU worker calls back to it) |
-| `RUNPOD_API_KEY`, `RUNPOD_ENDPOINT_ID` | for GPU processing | Without them, jobs wait for a manual/Colab worker |
+| `TRIPO_API_KEY` | for **Quick AI** | Tripo multiview-to-model (~$0.30/model). Or `FAL_KEY` for fal.ai TRELLIS (open source, ~$0.02) |
+| `KIRI_API_KEY` | for **High-accuracy** | KIRI Engine Photo Scan with background removal (~$1/scan, needs 20+ photos). `KIRI_SCAN=featureless` for shiny objects |
+| `DEFAULT_TIER` | | Used when the app doesn't choose. Default `quick` |
+| `TIER_PRODUCTS` | | Export product per tier. Default `quick=export_unlock,hq=export_unlock_hq` |
+| `RUNPOD_API_KEY`, `RUNPOD_ENDPOINT_ID` | optional | Self-hosted GPU pipeline. Without them, self-hosted jobs wait for a manual/Colab worker |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` (or `_PATH`) | for real payments | Service account with Play Console "View financial data" |
 | `PLAY_PACKAGE_NAME` | | Default `com.scanforge.app` |
 | `EXPORT_PRODUCT_IDS` | | Comma-separated in-app products that unlock export. Default `export_unlock` |

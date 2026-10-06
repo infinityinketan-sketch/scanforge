@@ -1,4 +1,5 @@
 import hashlib
+import os
 import hmac
 import logging
 import time
@@ -6,12 +7,14 @@ import uuid
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import config
 import db
+import processor
+import providers
 from billing import verify_purchase
 
 log = logging.getLogger("scanforge")
@@ -62,6 +65,8 @@ def _result_url(job_id: str):
 @app.on_event("startup")
 def startup():
     db.init()
+    if os.getenv("SCANFORGE_NO_PROCESSOR") != "1":
+        processor.start()
     if config.SECRET_IS_DEFAULT:
         log.warning("SECRET_KEY is not set: signed URLs are forgeable; manifest and dev-pay are disabled")
     if not config.API_BASE:
@@ -71,6 +76,12 @@ def startup():
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
+
+
+@app.get("/tiers")
+def tiers():
+    """Processing options this server can offer (depends on which API keys are set)."""
+    return {"default": config.DEFAULT_TIER, "tiers": providers.available_tiers()}
 
 
 # ---------- jobs ----------
@@ -106,18 +117,34 @@ async def upload_photos(job_id: str, photos: list[UploadFile] = File(...)):
     return {"uploaded": n}
 
 
+class ProcessReq(BaseModel):
+    tier: str | None = None
+
+
 @app.post("/jobs/{job_id}/process")
-async def process(job_id: str):
+async def process(job_id: str, req: ProcessReq | None = Body(None)):
     job = db.get_job(job_id)
     if not job:
         raise HTTPException(404)
-    if job["n_photos"] < config.MIN_PHOTOS:
-        raise HTTPException(400, f"need at least {config.MIN_PHOTOS} photos")
-    if not config.API_BASE:
+    tier = (req.tier if req and req.tier else None) or config.DEFAULT_TIER
+    prov = providers.provider_for(tier) if tier in providers.TIERS else None
+    if tier in providers.TIERS and prov is None:
+        if req and req.tier:
+            raise HTTPException(400, f"'{tier}' processing is not available on this server")
+        tier = "diy"          # no service configured: fall back to the self-hosted pipeline
+    elif tier not in providers.TIERS:
+        tier = "diy"
+    min_photos = providers.TIERS[tier]["min_photos"] if prov else config.MIN_PHOTOS
+    if job["n_photos"] < min_photos:
+        raise HTTPException(400, f"need at least {min_photos} photos for this option")
+    if not prov and not config.API_BASE:
         raise HTTPException(500, "API_BASE env var not set")
-    # Atomic: a double tap or retry can't start two GPU jobs. Failed jobs may be retried.
-    if not db.claim_status(job_id, ("created", "failed"), "queued", error=None):
+    # Atomic: a double tap or retry can't start two jobs. Failed jobs may be retried.
+    if not db.claim_status(job_id, ("created", "failed"), "queued", error=None, tier=tier,
+                           provider=prov.name if prov else None, provider_task=None, progress=0):
         return {"status": job["status"]}
+    if prov:
+        return {"status": "queued"}   # the background processor takes it from here
 
     if not config.RUNPOD_ENDPOINT:
         # Manual / Colab mode: an external worker reads /manifest and POSTs to the result URL.
@@ -144,7 +171,8 @@ async def _check_progress(job: dict) -> dict:
     """Catch jobs that died without reporting back (worker crash, OOM, timeout, restart)."""
     if job["status"] != "processing":
         return job
-    if job["started"] and time.time() - job["started"] > config.PROCESSING_TIMEOUT:
+    limit = providers.TIERS.get(job["tier"], {}).get("timeout", config.PROCESSING_TIMEOUT)
+    if job["started"] and time.time() - job["started"] > limit:
         db.update_job(job["id"], status="failed", error="processing timeout")
         return db.get_job(job["id"])
     if job["runpod_job"] and config.RUNPOD_ENDPOINT:
@@ -245,6 +273,9 @@ async def job_status(job_id: str):
         "n_photos": job["n_photos"],
         "error": job["error"],
         "paid": bool(job["paid"]),
+        "tier": job["tier"],
+        "progress": job["progress"] or 0,
+        "export_product_id": config.product_for_tier(job["tier"]),
     }
     if job["status"] == "done":
         out["preview_url"] = _signed("preview", job_id, f"/jobs/{job_id}/preview", 3600)
@@ -298,6 +329,8 @@ def billing_verify(req: VerifyReq):
     owner = db.job_for_token(req.token)
     if owner and owner != req.job_id:
         raise HTTPException(409, "purchase already used for another scan")
+    if req.product_id != config.product_for_tier(job["tier"]):
+        raise HTTPException(400, "this purchase doesn't unlock this kind of scan")
     if not verify_purchase(req.job_id, req.product_id, req.token):
         raise HTTPException(400, "purchase verification failed")
     db.update_job(req.job_id, paid=1, product_id=req.product_id, purchase_token=req.token)

@@ -27,7 +27,22 @@ data class JobStatus(
     val paid: Boolean,
     val preview_url: String? = null,
     val download: Map<String, String>? = null,
+    val tier: String? = null,
+    val progress: Int? = null,
+    val export_product_id: String? = null,
 )
+
+/** A processing option offered by the server (only those with an API key configured). */
+data class Tier(
+    val id: String,
+    val name: String,
+    val detail: String,
+    val min_photos: Int,
+    val export_product_id: String,
+)
+
+data class TiersResponse(val default: String?, val tiers: List<Tier>)
+data class ProcessRequest(val tier: String?)
 
 data class VerifyRequest(val job_id: String, val product_id: String, val token: String)
 data class VerifyResponse(val paid: Boolean)
@@ -44,7 +59,10 @@ interface ScanApi {
     ): Response<Unit>
 
     @POST("jobs/{id}/process")
-    suspend fun process(@Path("id") id: String): Response<Unit>
+    suspend fun process(@Path("id") id: String, @Body req: ProcessRequest): Response<Unit>
+
+    @GET("tiers")
+    suspend fun tiers(): TiersResponse
 
     @GET("jobs/{id}")
     suspend fun status(@Path("id") id: String): JobStatus

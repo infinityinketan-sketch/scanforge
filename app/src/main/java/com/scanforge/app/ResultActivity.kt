@@ -49,7 +49,8 @@ class ResultActivity : ComponentActivity() {
 
         unlockBtn.setOnClickListener {
             unlockBtn.isEnabled = false
-            BillingManager(this, jobId) { ok ->
+            val product = current?.export_product_id ?: BuildConfig.EXPORT_PRODUCT_ID
+            BillingManager(this, jobId, product) { ok ->
                 unlockBtn.isEnabled = true
                 if (ok) {
                     toast("Purchase verified ✓")
@@ -93,8 +94,15 @@ class ResultActivity : ComponentActivity() {
 
     private fun render(s: JobStatus) {
         statusText.text = when (s.status) {
-            "queued", "processing" ->
-                "⏳ Reconstructing your model… (${s.n_photos} photos)\nUsually takes 5–15 minutes."
+            "queued", "processing" -> {
+                val pct = s.progress?.takeIf { it in 1..99 }?.let { " · $it%" } ?: ""
+                when (s.tier) {
+                    "quick" -> "⏳ Generating your AI model…$pct\nUsually 1–3 minutes."
+                    "hq" -> "⏳ High-accuracy reconstruction from ${s.n_photos} photos…$pct\n" +
+                        "Usually 10–40 minutes. You can close the app and come back."
+                    else -> "⏳ Reconstructing your model… (${s.n_photos} photos)\nThis can take a while."
+                }
+            }
             "failed" ->
                 "❌ Failed: ${s.error}\nTip: retake photos with more overlap and steady lighting."
             "done" -> if (s.paid) "✅ Ready — download below" else "✅ Model ready! Unlock to export."

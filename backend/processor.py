@@ -1,0 +1,119 @@
+"""Background loop that runs provider-backed jobs (quick / hq tiers).
+
+queued      -> send photos to the provider            -> processing (provider_task saved)
+processing  -> poll; on success download + build files -> done
+            -> provider failure / timeout              -> failed
+
+All state lives in the database, so a restart picks up where it left off.
+"""
+import logging
+import shutil
+import threading
+import time
+
+import config
+import db
+import providers
+
+log = logging.getLogger("scanforge.processor")
+POLL_SECONDS = 5
+MAX_TRANSIENT_ERRORS = 6        # network hiccups tolerated per job before giving up
+_errors: dict[str, int] = {}
+
+
+def _fail(job_id: str, msg: str):
+    log.warning("job %s failed: %s", job_id, msg)
+    db.claim_status(job_id, ("queued", "processing"), "failed", error=msg[:500], finished=time.time())
+    _errors.pop(job_id, None)
+
+
+def build_outputs(jdir, model_glb):
+    """model.glb (as delivered), model.stl (for printing) and a lighter preview.glb."""
+    import trimesh
+
+    trimesh.load(model_glb, force="mesh").export(jdir / "model.stl")
+    make_preview(model_glb, jdir / "preview.glb")
+
+
+def make_preview(src, dest, max_texture=512):
+    """Same model with textures shrunk, so the free preview isn't the paid export."""
+    try:
+        import trimesh
+        from PIL import Image
+
+        scene = trimesh.load(src, force="scene")
+        for geom in scene.geometry.values():
+            mat = getattr(geom.visual, "material", None)
+            if mat is None:
+                continue
+            for attr in ("baseColorTexture", "metallicRoughnessTexture", "normalTexture",
+                         "occlusionTexture", "emissiveTexture", "image"):
+                img = getattr(mat, attr, None)
+                if isinstance(img, Image.Image) and max(img.size) > max_texture:
+                    small = img.copy()
+                    small.thumbnail((max_texture, max_texture))
+                    setattr(mat, attr, small)
+        scene.export(dest, file_type="glb")
+    except Exception:  # noqa: BLE001 - a full-quality preview beats no preview
+        log.exception("preview downscale failed; using the full model")
+        shutil.copy(src, dest)
+
+
+def step(job: dict):
+    """Advance one job by one stage. Safe to call repeatedly."""
+    job_id = job["id"]
+    prov = providers.provider_for(job["tier"])
+    if prov is None or prov.name != job["provider"]:
+        return _fail(job_id, f"the {job['tier']} service is not configured on the server")
+    jdir = config.JOBS_DIR / job_id
+    try:
+        if job["status"] == "queued":
+            photos = sorted(p for p in (jdir / "photos").iterdir() if p.is_file())
+            task = prov.submit(photos)
+            db.claim_status(job_id, ("queued",), "processing", provider_task=task,
+                            started=time.time(), progress=0)
+            log.info("job %s submitted to %s as %s", job_id, prov.name, task)
+            return
+
+        limit = providers.TIERS.get(job["tier"], {}).get("timeout", config.PROCESSING_TIMEOUT)
+        if job["started"] and time.time() - job["started"] > limit:
+            return _fail(job_id, "processing timeout")
+        p = prov.poll(job["provider_task"])
+        if p.state == "running":
+            if p.progress != job["progress"]:
+                db.update_job(job_id, progress=p.progress)
+        elif p.state == "failed":
+            _fail(job_id, p.error or "the 3D service could not build a model")
+        else:
+            tmp = jdir / "download.glb"
+            prov.fetch(p.url, tmp)
+            build_outputs(jdir, tmp)
+            tmp.replace(jdir / "model.glb")
+            db.claim_status(job_id, ("processing",), "done", error=None, progress=100, finished=time.time())
+            _errors.pop(job_id, None)
+            log.info("job %s done", job_id)
+    except providers.ProviderError as e:
+        _fail(job_id, str(e))
+    except Exception as e:  # noqa: BLE001 - network blips: retry a few times
+        n = _errors[job_id] = _errors.get(job_id, 0) + 1
+        log.warning("job %s: %s (attempt %d)", job_id, e, n)
+        if n >= MAX_TRANSIENT_ERRORS:
+            _fail(job_id, f"3D service unreachable: {str(e)[:200]}")
+
+
+def run_once():
+    for job in db.jobs_in(("queued", "processing")):
+        step(job)
+
+
+def _loop():
+    while True:
+        try:
+            run_once()
+        except Exception:  # noqa: BLE001 - never let the loop die
+            log.exception("processor loop error")
+        time.sleep(POLL_SECONDS)
+
+
+def start():
+    threading.Thread(target=_loop, name="processor", daemon=True).start()
