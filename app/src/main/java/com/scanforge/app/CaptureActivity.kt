@@ -4,13 +4,19 @@ import android.Manifest
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.View
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -183,22 +189,92 @@ class CaptureActivity : ComponentActivity() {
     /** Let the user pick Quick AI vs High-accuracy when the server offers more than one. */
     private fun chooseTierThenUpload() {
         if (tiers.size <= 1) return upload(tiers.firstOrNull()?.id)
-        val labels = tiers.map { t ->
-            val short = if (shots.size < t.min_photos) "\n⚠ needs ${t.min_photos}+ photos (you have ${shots.size})" else ""
-            "${t.name}\n${t.detail}$short"
-        }.toTypedArray()
-        AlertDialog.Builder(this)
+        val dp = resources.displayMetrics.density
+        val list = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((20 * dp).toInt(), (4 * dp).toInt(), (20 * dp).toInt(), (8 * dp).toInt())
+        }
+        val dialog = AlertDialog.Builder(this)
             .setTitle("How should we build your model?")
-            .setItems(labels) { _, which ->
-                val t = tiers[which]
-                if (shots.size < t.min_photos) {
-                    Toast.makeText(this, "Take at least ${t.min_photos} photos for ${t.name}", Toast.LENGTH_LONG).show()
-                } else {
-                    upload(t.id)
-                }
-            }
+            .setView(ScrollView(this).apply { addView(list) })
             .setNegativeButton("Cancel", null)
-            .show()
+            .create()
+        tiers.forEach { t ->
+            list.addView(tierCard(t, dp) {
+                dialog.dismiss()
+                upload(t.id)
+            })
+        }
+        dialog.show()
+    }
+
+    /** One option as a tappable card: title, description and a "Select" button. */
+    private fun tierCard(t: Tier, dp: Float, onPick: () -> Unit): View {
+        val enough = shots.size >= t.min_photos
+        val accent = if (enough) 0xFF1565C0.toInt() else 0xFF9E9E9E.toInt()
+        val px = { v: Int -> (v * dp).toInt() }
+
+        val shape = GradientDrawable().apply {
+            cornerRadius = 14 * dp
+            setStroke(px(2), accent)
+            setColor(if (enough) 0xFFF1F6FD.toInt() else 0xFFF4F4F4.toInt())
+        }
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = RippleDrawable(ColorStateList.valueOf(0x401565C0), shape, null)
+            setPadding(px(16), px(14), px(12), px(14))
+            isClickable = true
+            isFocusable = true
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = px(12) }
+        }
+        val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        texts.addView(TextView(this).apply {
+            text = t.name
+            textSize = 17f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(if (enough) 0xFF0D47A1.toInt() else 0xFF757575.toInt())
+        })
+        texts.addView(TextView(this).apply {
+            text = t.detail
+            textSize = 13f
+            setTextColor(0xFF424242.toInt())
+            setPadding(0, px(4), 0, 0)
+        })
+        if (!enough) {
+            texts.addView(TextView(this).apply {
+                text = "Needs ${t.min_photos}+ photos (you have ${shots.size})"
+                textSize = 13f
+                setTextColor(0xFFC62828.toInt())
+                setPadding(0, px(6), 0, 0)
+            })
+        }
+        card.addView(texts, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        card.addView(TextView(this).apply {
+            text = if (enough) "Select" else "Locked"
+            textSize = 14f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(0xFFFFFFFF.toInt())
+            gravity = Gravity.CENTER
+            setPadding(px(14), px(8), px(14), px(8))
+            background = GradientDrawable().apply {
+                cornerRadius = 20 * dp
+                setColor(accent)
+            }
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { marginStart = px(12) })
+
+        card.setOnClickListener {
+            if (enough) {
+                onPick()
+            } else {
+                Toast.makeText(this, "Take at least ${t.min_photos} photos for ${t.name}", Toast.LENGTH_LONG).show()
+            }
+        }
+        return card
     }
 
     private fun upload(tier: String?) {
