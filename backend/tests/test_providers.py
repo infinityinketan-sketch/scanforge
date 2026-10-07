@@ -48,6 +48,7 @@ def test_tripo(prov, monkeypatch, tmp_path):
 
     def handler(req: httpx.Request):
         assert req.headers["authorization"] == "Bearer tk"
+        assert req.url.host == "openapi.tripo3d.ai"   # global service, not the China one
         if req.url.path == "/v3/files":
             seen["files"] += 1
             assert b'name="file"' in req.content

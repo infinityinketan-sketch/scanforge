@@ -38,13 +38,14 @@ PROCESSING_TIMEOUT = int(os.getenv("PROCESSING_TIMEOUT", "1800"))
 
 # ---------- 3D services (see providers.py) ----------
 # basic tier: fal.ai TRELLIS (open source) · quick tier: Tripo
-TRIPO_API_KEY = os.getenv("TRIPO_API_KEY", "")
+TRIPO_API_KEY = os.getenv("TRIPO_API_KEY", "").strip()   # pasted keys often carry a stray newline
 TRIPO_MODEL = os.getenv("TRIPO_MODEL", "v3.1-20260211")
+TRIPO_BASE = os.getenv("TRIPO_BASE", "https://openapi.tripo3d.ai/v3")
 # Which Tripo view slot each quarter of the walk-around fills, in capture order.
 TRIPO_VIEW_ORDER = os.getenv("TRIPO_VIEW_ORDER", "front,left,back,right")
-FAL_KEY = os.getenv("FAL_KEY", "")
+FAL_KEY = os.getenv("FAL_KEY", "").strip()   # pasted keys often carry a stray newline
 # High-accuracy tier: KIRI Engine
-KIRI_API_KEY = os.getenv("KIRI_API_KEY", "")
+KIRI_API_KEY = os.getenv("KIRI_API_KEY", "").strip()   # pasted keys often carry a stray newline
 KIRI_SCAN = os.getenv("KIRI_SCAN", "photo")                # "photo" or "featureless" (shiny objects)
 KIRI_MODEL_QUALITY = int(os.getenv("KIRI_MODEL_QUALITY", "0"))      # 0 high, 1 medium, 2 low, 3 ultra
 KIRI_TEXTURE_QUALITY = int(os.getenv("KIRI_TEXTURE_QUALITY", "1"))  # 0 4K, 1 2K, 2 1K, 3 8K

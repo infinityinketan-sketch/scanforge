@@ -96,10 +96,12 @@ def _check(r: httpx.Response, service: str) -> dict:
 # ---------- Tripo (quick tier) ----------
 class Tripo:
     name = "tripo"
-    base = "https://openapi.tripo3d.com/v3"
 
     def __init__(self, key: str):
         self.h = {"Authorization": f"Bearer {key}"}
+        # openapi.tripo3d.ai is the global service (keys from platform.tripo3d.ai);
+        # openapi.tripo3d.com is the mainland-China one and rejects global keys.
+        self.base = config.TRIPO_BASE.rstrip("/")
 
     def submit(self, photos: list[Path]) -> str:
         # Capture order is a walk around the object moving to the user's right, so a quarter
