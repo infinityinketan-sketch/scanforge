@@ -133,8 +133,13 @@ class ResultActivity : ComponentActivity() {
                     else -> "⏳ Reconstructing your model… (${s.n_photos} photos)\nThis can take a while."
                 }
             }
-            "failed" ->
-                "❌ Failed: ${s.error}\nTip: retake photos with more overlap and steady lighting."
+            "failed" -> {
+                // Only suggest retaking photos when the failure is about the photos, not the service.
+                val photoProblem = listOf("photo", "overlap", "texture", "points", "match")
+                    .any { s.error?.contains(it, ignoreCase = true) == true }
+                "❌ Failed: ${s.error}" +
+                    if (photoProblem) "\nTip: retake photos with more overlap and steady lighting." else ""
+            }
             "done" -> if (s.paid) "✅ Ready — download below" else "✅ Model ready! Unlock to export."
             "created" -> when {
                 s.pay_before == true && !s.paid ->
