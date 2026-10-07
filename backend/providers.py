@@ -119,6 +119,8 @@ class Tripo:
                 "texture": True,
                 "pbr": True,
                 "texture_quality": "standard",
+                # Default output is ~1.5M triangles (45 MB GLB, 75 MB STL): too heavy for phones.
+                "face_limit": config.TRIPO_FACE_LIMIT,
             }
             r = c.post(f"{self.base}/generation/multiview-to-model", json=body)
             return _check(r, "Tripo")["data"]["task_id"]

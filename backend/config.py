@@ -41,6 +41,9 @@ PROCESSING_TIMEOUT = int(os.getenv("PROCESSING_TIMEOUT", "1800"))
 TRIPO_API_KEY = os.getenv("TRIPO_API_KEY", "").strip()   # pasted keys often carry a stray newline
 TRIPO_MODEL = os.getenv("TRIPO_MODEL", "v3.1-20260211")
 TRIPO_BASE = os.getenv("TRIPO_BASE", "https://openapi.tripo3d.ai/v3")
+TRIPO_FACE_LIMIT = int(os.getenv("TRIPO_FACE_LIMIT", "300000"))
+# Printable size for STL exports (largest dimension, mm). Photo scans carry no real-world scale.
+STL_SIZE_MM = float(os.getenv("STL_SIZE_MM", "100"))
 # Which Tripo view slot each quarter of the walk-around fills, in capture order.
 TRIPO_VIEW_ORDER = os.getenv("TRIPO_VIEW_ORDER", "front,left,back,right")
 FAL_KEY = os.getenv("FAL_KEY", "").strip()   # pasted keys often carry a stray newline

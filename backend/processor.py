@@ -31,7 +31,12 @@ def build_outputs(jdir, model_glb):
     """model.glb (as delivered), model.stl (for printing) and a lighter preview.glb."""
     import trimesh
 
-    trimesh.load(model_glb, force="mesh").export(jdir / "model.stl")
+    mesh = trimesh.load(model_glb, force="mesh")
+    # Services deliver models about 1 unit tall, which a slicer reads as 1 mm: scale for printing.
+    size = float(max(mesh.extents)) if len(mesh.vertices) else 0.0
+    if size > 0:
+        mesh.apply_scale(config.STL_SIZE_MM / size)
+    mesh.export(jdir / "model.stl")
     make_preview(model_glb, jdir / "preview.glb")
 
 

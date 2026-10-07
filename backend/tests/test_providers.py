@@ -72,6 +72,7 @@ def test_tripo(prov, monkeypatch, tmp_path):
     assert seen["files"] == 4
     assert body["inputs"] == [{"front": "file_1"}, {"left": "file_2"}, {"back": "file_3"}, {"right": "file_4"}]
     assert body["model"] == "v3.1-20260211" and body["texture"] is True
+    assert body["face_limit"] == 300000
     assert t.poll("task_abc") == prov.Poll("running", 55)
     assert t.poll("task_abc").url.endswith("model_pbr.glb")
 

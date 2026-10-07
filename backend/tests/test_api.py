@@ -204,6 +204,10 @@ def test_quick_tier_end_to_end(client, monkeypatch):
     glb = c.get(_path(s["download"]["glb"])).content
     stl = c.get(_path(s["download"]["stl"])).content
     assert glb[:4] == b"glTF" and len(stl) > 500
+    import io
+    import trimesh
+    printed = trimesh.load(io.BytesIO(stl), file_type="stl")
+    assert abs(max(printed.extents) - 100) < 0.01      # sized for a slicer (mm)
     assert len(preview) < len(glb)             # preview carries a smaller texture
 
 
