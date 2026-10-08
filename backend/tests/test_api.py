@@ -257,3 +257,23 @@ def test_pick_views_spreads_round_the_loop(tmp_path):
         paths.append(p)
     views = providers.pick_views(paths, 4, 2048)
     assert len(views) == 4 and all(v[:2] == b"\xff\xd8" for v in views)
+
+
+def test_customer_never_sees_service_names(client, monkeypatch):
+    import processor
+    m = processor.customer_message
+    assert m("Tripo error 403/2010: You don't have enough credit to create this task") == \
+        "Processing is temporarily unavailable. Please try again later."
+    assert m("Tripo: API key rejected").startswith("Processing is temporarily unavailable")
+    out = m("KIRI Engine scan failed: try more photos with good overlap")
+    assert "KIRI" not in out and "more photos" in out
+
+
+def test_tiers_show_price_and_quality_not_services(client, monkeypatch):
+    fake = FakeProvider()
+    _tier_client(client, monkeypatch, fake)
+    t = {x["id"]: x for x in client.get("/tiers").json()["tiers"]}
+    assert t["quick"]["price"] == "₹99" and t["quick"]["quality"] == 4 and t["hq"]["eta"]
+    text = " ".join(x["name"] + x["detail"] for x in t.values()).lower()
+    for name in ("tripo", "kiri", "trellis", "fal"):
+        assert name not in text

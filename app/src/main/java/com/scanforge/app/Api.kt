@@ -31,6 +31,7 @@ data class JobStatus(
     val progress: Int? = null,
     val export_product_id: String? = null,
     val pay_before: Boolean? = null,   // true: buy before processing (service tiers)
+    val price: String? = null,
 )
 
 /** A processing option offered by the server (only those with an API key configured). */
@@ -40,6 +41,9 @@ data class Tier(
     val detail: String,
     val min_photos: Int,
     val export_product_id: String,
+    val quality: Int = 0,          // 1–5, shown as stars
+    val eta: String? = null,       // e.g. "About 2 minutes"
+    val price: String? = null,     // e.g. "₹99"
 )
 
 data class TiersResponse(val default: String?, val tiers: List<Tier>)

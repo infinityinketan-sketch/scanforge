@@ -7,6 +7,7 @@ processing  -> poll; on success download + build files -> done
 All state lives in the database, so a restart picks up where it left off.
 """
 import logging
+import re
 import shutil
 import threading
 import time
@@ -21,9 +22,27 @@ MAX_TRANSIENT_ERRORS = 6        # network hiccups tolerated per job before givin
 _errors: dict[str, int] = {}
 
 
+# Problems on our side (keys, credit, outages): the customer can't fix these by rescanning.
+_OUR_PROBLEM = ("api key", "credit", "not configured", "unreachable", "error 5", "timeout")
+_SERVICE_NAMES = re.compile(r"\b(tripo|kiri engine|kiri|fal\.ai|fal|trellis)\b:?\s*", re.I)
+
+
+def customer_message(msg: str) -> str:
+    """What the app shows: no service names, and no internal details for server-side problems."""
+    low = msg.lower()
+    if any(k in low for k in _OUR_PROBLEM):
+        return "Processing is temporarily unavailable. Please try again later."
+    return _SERVICE_NAMES.sub("", msg).strip() or "We couldn't build a model from these photos."
+
+
 def _fail(job_id: str, msg: str):
-    log.warning("job %s failed: %s", job_id, msg)
-    db.claim_status(job_id, ("queued", "processing"), "failed", error=msg[:500], finished=time.time())
+    log.warning("job %s failed: %s", job_id, msg)   # full reason stays in the server log
+    try:
+        (config.JOBS_DIR / job_id / "error.log").write_text(msg)
+    except OSError:
+        pass
+    db.claim_status(job_id, ("queued", "processing"), "failed", error=customer_message(msg)[:500],
+                    finished=time.time())
     _errors.pop(job_id, None)
 
 

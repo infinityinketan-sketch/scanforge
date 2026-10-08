@@ -248,30 +248,36 @@ def _download(url: str, dest: Path):
 
 
 # ---------- tier registry ----------
+# What the customer sees. Never name the underlying service here: it's an implementation detail.
 TIERS = {
     "basic": {
-        "name": "Budget AI model",
-        "detail": "About 1 minute. Open-source AI (TRELLIS) builds a rough model from 4 of your "
-                  "photos; cheapest option, simplest shapes and textures.",
+        "name": "Basic",
+        "quality": 2,
+        "eta": "About 1 minute",
+        "detail": "A quick, rough 3D model from your photos. Simple shape and colours; good for "
+                  "previews and sharing.",
         "min_photos": 8,
         "timeout": 1200,
     },
     "quick": {
-        "name": "Quick AI model",
-        "detail": "About 2 minutes. AI builds a clean, complete model from 4 of your photos; "
-                  "fine details and exact proportions are approximated.",
+        "name": "Standard",
+        "quality": 4,
+        "eta": "About 2 minutes",
+        "detail": "A clean, complete model with detailed colours. Great for display, AR and printing "
+                  "figurines; small details are approximated.",
         "min_photos": 8,
         "timeout": 1200,
     },
     "hq": {
-        "name": "High-accuracy scan",
-        "detail": "10–40 minutes. True 3D reconstruction from all your photos with automatic "
-                  "background removal; best for exact copies and 3D printing.",
+        "name": "Premium",
+        "quality": 5,
+        "eta": "10–40 minutes",
+        "detail": "Highest accuracy: measured from all your photos with the background removed. "
+                  "Best for exact copies and 3D printing.",
         "min_photos": KIRI_MIN_PHOTOS,
         "timeout": 4 * 3600,
     },
 }
-
 
 def provider_for(tier: str):
     """The configured provider for a tier, or None if its API key isn't set."""
@@ -289,5 +295,6 @@ def available_tiers() -> list[dict]:
     for tid, t in TIERS.items():
         if provider_for(tid):
             out.append({"id": tid, "name": t["name"], "detail": t["detail"], "min_photos": t["min_photos"],
+                        "quality": t["quality"], "eta": t["eta"], "price": config.price_for_tier(tid),
                         "export_product_id": config.product_for_tier(tid)})
     return out

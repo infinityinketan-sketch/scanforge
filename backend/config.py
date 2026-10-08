@@ -66,6 +66,19 @@ TIER_PRODUCTS = dict(
 EXPORT_PRODUCT_IDS |= set(TIER_PRODUCTS.values())
 
 
+# Price label shown to customers per option ("tier=label,…"). Placeholders: set these to match
+# the prices of the Play products above.
+TIER_PRICES = dict(
+    pair.split("=", 1)
+    for pair in os.getenv("TIER_PRICES", "basic=₹29,quick=₹99,hq=₹249").split(",")
+    if "=" in pair
+)
+
+
+def price_for_tier(tier: str | None) -> str:
+    return TIER_PRICES.get(tier or "", "")
+
+
 def product_for_tier(tier: str | None) -> str:
     return TIER_PRODUCTS.get(tier or "diy", "export_unlock")
 

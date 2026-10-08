@@ -295,6 +295,7 @@ async def job_status(job_id: str):
         "progress": job["progress"] or 0,
         "export_product_id": config.product_for_tier(job["tier"]),
         "pay_before": _service_tier(job["tier"]),
+        "price": config.price_for_tier(job["tier"]),
     }
     if job["status"] == "done":
         out["preview_url"] = _signed("preview", job_id, f"/jobs/{job_id}/preview", 3600)

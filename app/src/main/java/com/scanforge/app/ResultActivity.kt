@@ -127,7 +127,8 @@ class ResultActivity : ComponentActivity() {
             "queued", "processing" -> {
                 val pct = s.progress?.takeIf { it in 1..99 }?.let { " · $it%" } ?: ""
                 when (s.tier) {
-                    "quick" -> "⏳ Generating your AI model…$pct\nUsually 1–3 minutes."
+                    "basic" -> "⏳ Building your model…$pct\nUsually about 1 minute."
+                    "quick" -> "⏳ Building your model…$pct\nUsually 1–3 minutes."
                     "hq" -> "⏳ High-accuracy reconstruction from ${s.n_photos} photos…$pct\n" +
                         "Usually 10–40 minutes. You can close the app and come back."
                     else -> "⏳ Reconstructing your model… (${s.n_photos} photos)\nThis can take a while."
@@ -153,6 +154,7 @@ class ResultActivity : ComponentActivity() {
             autoStartTried = true
             startProcessing()
         }
+        payBtn.text = if (s.price.isNullOrBlank()) "Pay & build my model" else "Pay ${s.price} & build my model"
         payBtn.visibility = if (s.status == "created" && s.pay_before == true && !s.paid) View.VISIBLE else View.GONE
         unlockBtn.visibility = if (s.status == "done" && !s.paid && s.pay_before != true) View.VISIBLE else View.GONE
         val paidReady = s.status == "done" && s.paid
