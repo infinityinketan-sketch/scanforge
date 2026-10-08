@@ -7,7 +7,9 @@ import uuid
 from pathlib import Path
 
 import httpx
-from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
+import secrets
+
+from fastapi import Body, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -15,7 +17,7 @@ import config
 import db
 import processor
 import providers
-from billing import verify_purchase
+from billing import verify_pack, verify_purchase
 
 log = logging.getLogger("scanforge")
 app = FastAPI(title="ScanForge API")
@@ -85,6 +87,68 @@ def tiers():
 
 
 # ---------- jobs ----------
+# ---------- accounts and points ----------
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _account(authorization: str | None, required: bool = True) -> str | None:
+    """The caller's account from 'Authorization: Bearer <token>'."""
+    token = (authorization or "").removeprefix("Bearer ").strip()
+    account = db.account_for_token(_token_hash(token)) if token else None
+    if required and not account:
+        raise HTTPException(401, "sign-in required")
+    return account
+
+
+@app.post("/accounts")
+def create_account():
+    """A private account for this app install. The token is shown once; the app keeps it."""
+    account_id = uuid.uuid4().hex[:16]
+    token = secrets.token_urlsafe(32)
+    db.create_account(account_id, _token_hash(token))
+    if config.WELCOME_POINTS:
+        db.add_entry(account_id, config.WELCOME_POINTS, "bonus", f"welcome:{account_id}", "Welcome bonus")
+    return {"account_id": account_id, "token": token}
+
+
+def _packs():
+    return [{"product_id": pid, "points": pts, "price": config.PACK_PRICES.get(pid, "")}
+            for pid, pts in sorted(config.POINT_PACKS.items(), key=lambda kv: kv[1])]
+
+
+@app.get("/account")
+def account_summary(authorization: str | None = Header(None)):
+    account = _account(authorization)
+    return {"account_id": account, "balance": db.balance(account), "packs": _packs()}
+
+
+@app.get("/account/history")
+def account_history(limit: int = 100, authorization: str | None = Header(None)):
+    account = _account(authorization)
+    return {"balance": db.balance(account),
+            "entries": db.history(account, max(1, min(limit, 500)))}
+
+
+class PackReq(BaseModel):
+    product_id: str
+    token: str
+
+
+@app.post("/account/purchase")
+def buy_points(req: PackReq, authorization: str | None = Header(None)):
+    account = _account(authorization)
+    points = config.POINT_PACKS.get(req.product_id)
+    if not points:
+        raise HTTPException(400, "unknown point pack")
+    if not verify_pack(account, req.product_id, req.token):
+        raise HTTPException(400, "purchase verification failed")
+    # The ledger refuses a second credit for the same purchase token.
+    if not db.add_entry(account, points, "purchase", f"play:{req.token}", f"Bought {points} points"):
+        return {"credited": 0, "balance": db.balance(account)}
+    return {"credited": points, "balance": db.balance(account)}
+
+
 class CreateReq(BaseModel):
     tier: str | None = None
 
@@ -95,14 +159,15 @@ def _service_tier(tier: str | None) -> bool:
 
 
 @app.post("/jobs")
-def create_job(req: CreateReq | None = Body(None)):
+def create_job(req: CreateReq | None = Body(None), authorization: str | None = Header(None)):
     tier = req.tier if req else None
     if tier is not None and providers.provider_for(tier) is None:
         raise HTTPException(400, f"'{tier}' processing is not available on this server")
+    account = _account(authorization, required=False)
     job_id = uuid.uuid4().hex[:16]
     db.create_job(job_id)
-    if tier:
-        db.update_job(job_id, tier=tier)
+    if tier or account:
+        db.update_job(job_id, tier=tier, account_id=account)
     return {"job_id": job_id, "tier": tier}
 
 
@@ -136,7 +201,8 @@ class ProcessReq(BaseModel):
 
 
 @app.post("/jobs/{job_id}/process")
-async def process(job_id: str, req: ProcessReq | None = Body(None)):
+async def process(job_id: str, req: ProcessReq | None = Body(None),
+                  authorization: str | None = Header(None)):
     job = db.get_job(job_id)
     if not job:
         raise HTTPException(404)
@@ -149,9 +215,22 @@ async def process(job_id: str, req: ProcessReq | None = Body(None)):
         tier = "diy"          # no service configured: fall back to the self-hosted pipeline
     elif not _service_tier(tier):
         tier = "diy"
-    # Service tiers cost us money per run, so they're bought before processing starts.
-    if prov and not (job["paid"] and job["product_id"] in (config.product_for_tier(tier), "dev")):
-        raise HTTPException(402, "payment required before processing")
+    if prov and job["status"] == "failed":
+        raise HTTPException(409, "This scan failed and its points were refunded. Please start a new scan.")
+    # Service tiers cost us money per run, so they're paid for before processing starts:
+    # with points from the owner's balance (or, legacy, a per-scan purchase).
+    if prov and not (job["paid"] and job["product_id"] in (config.product_for_tier(tier), "dev", "points")):
+        account = _account(authorization)
+        if job["account_id"] and job["account_id"] != account:
+            raise HTTPException(403, "this scan belongs to another account")
+        if job["n_photos"] < providers.TIERS[tier]["min_photos"]:
+            raise HTTPException(400, f"need at least {providers.TIERS[tier]['min_photos']} photos for this option")
+        cost = config.points_for_tier(tier)
+        ok, bal = db.spend(account, cost, job_id, f"{providers.TIERS[tier]['name']} scan")
+        if not ok:
+            raise HTTPException(402, f"Not enough points: this scan needs {cost}, you have {bal}.")
+        db.update_job(job_id, paid=1, product_id="points", cost=cost, account_id=account, tier=tier)
+        job = db.get_job(job_id)
     min_photos = providers.TIERS[tier]["min_photos"] if prov else config.MIN_PHOTOS
     if job["n_photos"] < min_photos:
         raise HTTPException(400, f"need at least {min_photos} photos for this option")
@@ -191,7 +270,9 @@ async def _check_progress(job: dict) -> dict:
         return job
     limit = providers.TIERS.get(job["tier"], {}).get("timeout", config.PROCESSING_TIMEOUT)
     if job["started"] and time.time() - job["started"] > limit:
-        db.update_job(job["id"], status="failed", error="processing timeout")
+        if db.claim_status(job["id"], ("processing",), "failed", finished=time.time(),
+                           error=processor.customer_message("processing timeout")):
+            processor.refund(job["id"])
         return db.get_job(job["id"])
     if job["runpod_job"] and config.RUNPOD_ENDPOINT:
         try:
@@ -296,6 +377,7 @@ async def job_status(job_id: str):
         "export_product_id": config.product_for_tier(job["tier"]),
         "pay_before": _service_tier(job["tier"]),
         "price": config.price_for_tier(job["tier"]),
+        "points": config.points_for_tier(job["tier"]),
     }
     if job["status"] == "done":
         out["preview_url"] = _signed("preview", job_id, f"/jobs/{job_id}/preview", 3600)

@@ -50,6 +50,7 @@ class CaptureActivity : ComponentActivity() {
 
     private val shots = mutableListOf<File>()
     private var tiers: List<Tier> = emptyList()   // processing options the server offers
+    private var balance: Int? = null              // points available, if known
     private val handler = Handler(Looper.getMainLooper())
     private var capturing = false
     private var busy = false
@@ -107,9 +108,15 @@ class CaptureActivity : ComponentActivity() {
 
     private fun loadTiers() = lifecycleScope.launch {
         tiers = try {
+            Account.ensure(this@CaptureActivity)
             withContext(Dispatchers.IO) { Api.scan.tiers().tiers }
         } catch (_: Exception) {
             emptyList()   // older server or offline: upload without choosing, server uses its default
+        }
+        balance = try {
+            Account.call(this@CaptureActivity) { withContext(Dispatchers.IO) { Api.scan.wallet().balance } }
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -195,7 +202,7 @@ class CaptureActivity : ComponentActivity() {
             setPadding((20 * dp).toInt(), (4 * dp).toInt(), (20 * dp).toInt(), (8 * dp).toInt())
         }
         val dialog = AlertDialog.Builder(this)
-            .setTitle("Choose your model quality")
+            .setTitle(balance?.let { "Choose quality · you have $it points" } ?: "Choose your model quality")
             .setView(ScrollView(this).apply { addView(list) })
             .setNegativeButton("Cancel", null)
             .create()
@@ -241,9 +248,9 @@ class CaptureActivity : ComponentActivity() {
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(if (enough) 0xFF0D47A1.toInt() else 0xFF757575.toInt())
         }, LinearLayout.LayoutParams(0, wrap, 1f))
-        if (!t.price.isNullOrBlank()) {
+        if (t.points > 0) {
             header.addView(TextView(this).apply {
-                text = t.price
+                text = "${t.points} pts"
                 textSize = 19f
                 setTypeface(typeface, Typeface.BOLD)
                 setTextColor(accent)
@@ -284,8 +291,8 @@ class CaptureActivity : ComponentActivity() {
         card.addView(TextView(this).apply {
             text = when {
                 !enough -> "Not available"
-                t.price.isNullOrBlank() -> "Choose ${t.name}"
-                else -> "Choose ${t.name} · ${t.price}"
+                t.points <= 0 -> "Choose ${t.name}"
+                else -> "Choose ${t.name} · ${t.points} points"
             }
             textSize = 15f
             setTypeface(typeface, Typeface.BOLD)

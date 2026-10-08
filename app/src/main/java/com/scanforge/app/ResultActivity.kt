@@ -1,5 +1,6 @@
 package com.scanforge.app
 
+import android.app.AlertDialog
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -16,6 +17,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import org.json.JSONObject
 
 class ResultActivity : ComponentActivity() {
 
@@ -52,14 +54,8 @@ class ResultActivity : ComponentActivity() {
         root.addView(previewBtn)
         setContentView(root)
 
-        payBtn.setOnClickListener {
-            payBtn.isEnabled = false
-            val product = current?.export_product_id ?: BuildConfig.EXPORT_PRODUCT_ID
-            BillingManager(this, jobId, product) { ok ->
-                payBtn.isEnabled = true
-                if (ok) startProcessing()
-            }.launchExportUnlock()
-        }
+        // Paid with points from the wallet; topping up happens on the Wallet screen.
+        payBtn.setOnClickListener { startProcessing() }
         unlockBtn.setOnClickListener {
             unlockBtn.isEnabled = false
             val product = current?.export_product_id ?: BuildConfig.EXPORT_PRODUCT_ID
@@ -82,6 +78,7 @@ class ResultActivity : ComponentActivity() {
     }
 
     private fun poll() = lifecycleScope.launch {
+        runCatching { Account.ensure(this@ResultActivity) }
         while (true) {
             try {
                 val s = Api.scan.status(jobId)
@@ -96,21 +93,45 @@ class ResultActivity : ComponentActivity() {
         }
     }
 
-    /** Paid (or test build): ask the server to start building the model. */
+    override fun onResume() {
+        super.onResume()
+        refresh()   // e.g. back from the Wallet after buying points
+    }
+
+    /** Spend the scan's points and ask the server to start building the model. */
     private fun startProcessing() {
         if (starting) return
         starting = true
+        payBtn.isEnabled = false
         lifecycleScope.launch {
             try {
+                Account.ensure(this@ResultActivity)
                 val r = withContext(Dispatchers.IO) { Api.scan.process(jobId, ProcessRequest(null)) }
-                if (!r.isSuccessful) toast("Couldn't start: ${r.errorBody()?.string()?.take(200)}")
+                if (!r.isSuccessful) {
+                    val detail = r.errorBody()?.string()?.let {
+                        runCatching { JSONObject(it).getString("detail") }.getOrDefault(it)
+                    }?.take(200) ?: "HTTP ${r.code()}"
+                    if (r.code() == 402) askToBuyPoints(detail) else toast("Couldn't start: $detail")
+                }
                 refresh()
             } catch (e: Exception) {
                 toast("Couldn't start: ${e.message}")
             } finally {
                 starting = false
+                payBtn.isEnabled = true
             }
         }
+    }
+
+    private fun askToBuyPoints(detail: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Not enough points")
+            .setMessage(detail)
+            .setPositiveButton("Buy points") { _, _ ->
+                startActivity(Intent(this, WalletActivity::class.java))
+            }
+            .setNegativeButton("Later", null)
+            .show()
     }
 
     private fun refresh() = lifecycleScope.launch {
@@ -138,13 +159,16 @@ class ResultActivity : ComponentActivity() {
                 // Only suggest retaking photos when the failure is about the photos, not the service.
                 val photoProblem = listOf("photo", "overlap", "texture", "points", "match")
                     .any { s.error?.contains(it, ignoreCase = true) == true }
-                "❌ Failed: ${s.error}" +
+                val refunded = if (s.pay_before == true && s.paid && (s.points ?: 0) > 0)
+                    "\n${s.points} points were returned to your wallet." else ""
+                "❌ Failed: ${s.error}" + refunded +
                     if (photoProblem) "\nTip: retake photos with more overlap and steady lighting." else ""
             }
             "done" -> if (s.paid) "✅ Ready — download below" else "✅ Model ready! Unlock to export."
             "created" -> when {
                 s.pay_before == true && !s.paid ->
-                    "📷 ${s.n_photos} photos uploaded.\nPay to build your model; you can download it as soon as it's ready."
+                    "📷 ${s.n_photos} photos uploaded.\nBuilding this model uses ${s.points ?: 0} points " +
+                        "from your wallet; you can download it as soon as it's ready."
                 else -> "Starting…"
             }
             else -> "Working…"
@@ -154,7 +178,7 @@ class ResultActivity : ComponentActivity() {
             autoStartTried = true
             startProcessing()
         }
-        payBtn.text = if (s.price.isNullOrBlank()) "Pay & build my model" else "Pay ${s.price} & build my model"
+        payBtn.text = if ((s.points ?: 0) > 0) "Use ${s.points} points & build my model" else "Build my model"
         payBtn.visibility = if (s.status == "created" && s.pay_before == true && !s.paid) View.VISIBLE else View.GONE
         unlockBtn.visibility = if (s.status == "done" && !s.paid && s.pay_before != true) View.VISIBLE else View.GONE
         val paidReady = s.status == "done" && s.paid

@@ -41,9 +41,18 @@ def _fail(job_id: str, msg: str):
         (config.JOBS_DIR / job_id / "error.log").write_text(msg)
     except OSError:
         pass
-    db.claim_status(job_id, ("queued", "processing"), "failed", error=customer_message(msg)[:500],
-                    finished=time.time())
+    if db.claim_status(job_id, ("queued", "processing"), "failed", error=customer_message(msg)[:500],
+                       finished=time.time()):
+        refund(job_id)
     _errors.pop(job_id, None)
+
+
+def refund(job_id: str):
+    """Give back the points a failed scan was charged (once per scan)."""
+    job = db.get_job(job_id)
+    if job and job["account_id"] and job["product_id"] == "points" and job["cost"]:
+        if db.add_entry(job["account_id"], job["cost"], "refund", job_id, "Refund: scan failed"):
+            log.info("job %s: refunded %s points", job_id, job["cost"])
 
 
 def build_outputs(jdir, model_glb):

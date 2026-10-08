@@ -75,6 +75,27 @@ TIER_PRICES = dict(
 )
 
 
+# ---------- points (1 point = ₹1 by default; all values are placeholders) ----------
+def _pairs(env, default):
+    return dict(p.split("=", 1) for p in os.getenv(env, default).split(",") if "=" in p)
+
+
+# Points each option costs.
+TIER_POINTS = {k: int(v) for k, v in _pairs("TIER_POINTS", "basic=29,quick=99,hq=249").items()}
+# Point packs sold through Google Play: product id -> points, and the price label shown.
+POINT_PACKS = {k: int(v) for k, v in _pairs(
+    "POINT_PACKS", "points_100=100,points_300=300,points_1000=1000").items()}
+PACK_PRICES = _pairs("PACK_PRICES", "points_100=₹99,points_300=₹279,points_1000=₹849")
+
+
+# Free points for a new account (0 = none).
+WELCOME_POINTS = int(os.getenv("WELCOME_POINTS", "0"))
+
+
+def points_for_tier(tier: str | None) -> int:
+    return TIER_POINTS.get(tier or "", 0)
+
+
 def price_for_tier(tier: str | None) -> str:
     return TIER_PRICES.get(tier or "", "")
 

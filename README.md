@@ -63,6 +63,9 @@ python -m pytest tests     # end-to-end API tests, no GPU / Play needed
 | `TRIPO_API_KEY` | for **Quick AI** | Tripo multiview-to-model (~$0.30/model) |
 | `KIRI_API_KEY` | for **High-accuracy** | KIRI Engine Photo Scan with background removal (~$1/scan, needs 20+ photos). `KIRI_SCAN=featureless` for shiny objects |
 | `DEFAULT_TIER` | | Used when the app doesn't choose. Default `quick` |
+| `TIER_POINTS` | | Points per scan. Default `basic=29,quick=99,hq=249` (1 point = ₹1) |
+| `POINT_PACKS`, `PACK_PRICES` | | Play products sold as point packs and their price labels |
+| `WELCOME_POINTS` | | Free points for a new account. Default 0 |
 | `TIER_PRODUCTS` | | Play product per option, bought **before** processing. Default `basic=scan_basic,quick=scan_quick,hq=scan_hq` |
 | `RUNPOD_API_KEY`, `RUNPOD_ENDPOINT_ID` | optional | Self-hosted GPU pipeline. Without them, self-hosted jobs wait for a manual/Colab worker |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` (or `_PATH`) | for real payments | Service account with Play Console "View financial data" |
@@ -87,8 +90,12 @@ requires CUDA, and Ubuntu's `apt install colmap` is built without it.
 
 ## Play Console setup
 
-1. Create one-time (consumable) in-app products `scan_basic`, `scan_quick` and `scan_hq`, priced
-   per option. Each scan is bought before processing; a purchase the backend refuses is never
-   acknowledged, so Play refunds it automatically. (`export_unlock` is only for the self-hosted pipeline.)
+1. Create consumable in-app products for the point packs: `points_100`, `points_300`, `points_1000`
+   (defaults ₹99 / ₹279 / ₹849; set `POINT_PACKS` and `PACK_PRICES` to match what you configure).
+   Customers buy points into their wallet; each scan spends points (`TIER_POINTS`, default
+   Basic 29, Standard 99, Premium 249) before processing, and a failed scan refunds them
+   automatically. A purchase the backend refuses is never acknowledged, so Play refunds it.
+   (`scan_*` per-scan products and `export_unlock` remain only for older app versions and the
+   self-hosted pipeline.)
 2. Link a Google Cloud service account under *Users and permissions* and give its JSON to the backend.
 3. Billing only works for builds installed from a Play testing track, signed with the upload key.

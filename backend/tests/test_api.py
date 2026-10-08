@@ -182,7 +182,7 @@ def test_quick_tier_end_to_end(client, monkeypatch):
     job = _new_real_job(c, 12, tier="quick")
     assert c.get(f"/jobs/{job}").json()["pay_before"] is True
     # Nothing runs (and nothing is spent at the service) until the scan is paid for.
-    assert c.post(f"/jobs/{job}/process").status_code == 402
+    assert c.post(f"/jobs/{job}/process").status_code == 401   # no account, no points
     bad = c.post("/billing/verify", json={"job_id": job, "product_id": "scan_hq", "token": "T"})
     assert bad.status_code == 400
     assert c.post("/billing/verify", json={"job_id": job, "product_id": "scan_quick", "token": "T"}).json() == {"paid": True}
@@ -277,3 +277,79 @@ def test_tiers_show_price_and_quality_not_services(client, monkeypatch):
     text = " ".join(x["name"] + x["detail"] for x in t.values()).lower()
     for name in ("tripo", "kiri", "trellis", "fal"):
         assert name not in text
+
+
+
+# ---------- accounts and points ----------
+def _account(c):
+    r = c.post("/accounts").json()
+    return {"Authorization": f"Bearer {r['token']}"}
+
+
+def _buy(c, h, product, token):
+    return c.post("/account/purchase", json={"product_id": product, "token": token}, headers=h)
+
+
+def test_buy_points_and_history(client):
+    c = client
+    h = _account(c)
+    w = c.get("/account", headers=h).json()
+    assert w["balance"] == 0 and [p["points"] for p in w["packs"]] == [100, 300, 1000]
+    assert w["packs"][0] == {"product_id": "points_100", "points": 100, "price": "₹99"}
+    assert _buy(c, h, "points_100", "tok-1").json() == {"credited": 100, "balance": 100}
+    # The same purchase can't be credited twice (e.g. app retried after a timeout).
+    assert _buy(c, h, "points_100", "tok-1").json() == {"credited": 0, "balance": 100}
+    assert _buy(c, h, "free_points", "tok-2").status_code == 400
+    assert c.get("/account").status_code == 401
+    assert c.get("/account", headers={"Authorization": "Bearer nope"}).status_code == 401
+    hist = c.get("/account/history", headers=h).json()
+    assert hist["balance"] == 100 and [e["amount"] for e in hist["entries"]] == [100]
+
+
+def test_scan_spends_points(client, monkeypatch):
+    import processor
+    fake = FakeProvider(polls_before_done=0)
+    c = _tier_client(client, monkeypatch, fake)
+    h = _account(c)
+    job = c.post("/jobs", json={"tier": "quick"}, headers=h).json()["job_id"]
+    files = [("photos", (f"p{i}.jpg", _real_jpeg(i), "image/jpeg")) for i in range(12)]
+    c.post(f"/jobs/{job}/photos", files=files)
+    assert c.get(f"/jobs/{job}").json()["points"] == 99
+
+    r = c.post(f"/jobs/{job}/process", headers=h)
+    assert r.status_code == 402 and "needs 99, you have 0" in r.json()["detail"]
+    _buy(c, h, "points_100", "tok-a")
+    other = _account(c)
+    _buy(c, other, "points_300", "tok-b")
+    assert c.post(f"/jobs/{job}/process", headers=other).status_code == 403   # not your scan
+    assert c.post(f"/jobs/{job}/process", headers=h).json() == {"status": "queued"}
+    assert c.post(f"/jobs/{job}/process", headers=h).json()["status"] == "queued"  # no double charge
+    assert c.get("/account", headers=h).json()["balance"] == 1
+    processor.run_once()
+    processor.run_once()
+    assert c.get(f"/jobs/{job}").json()["status"] == "done"
+    notes = [(e["amount"], e["note"]) for e in c.get("/account/history", headers=h).json()["entries"]]
+    assert notes == [(-99, "Standard scan"), (100, "Bought 100 points")]
+
+
+def test_failed_scan_refunds_points(client, monkeypatch):
+    import processor
+    fake = FakeProvider(outcome="failed", polls_before_done=0)
+    c = _tier_client(client, monkeypatch, fake)
+    h = _account(c)
+    _buy(c, h, "points_300", "tok-c")
+    job = c.post("/jobs", json={"tier": "hq"}, headers=h).json()["job_id"]
+    files = [("photos", (f"p{i}.jpg", _real_jpeg(i), "image/jpeg")) for i in range(20)]
+    c.post(f"/jobs/{job}/photos", files=files)
+    assert c.post(f"/jobs/{job}/process", headers=h).json() == {"status": "queued"}
+    assert c.get("/account", headers=h).json()["balance"] == 51
+    processor.run_once()
+    processor.run_once()
+    assert c.get(f"/jobs/{job}").json()["status"] == "failed"
+    hist = c.get("/account/history", headers=h).json()
+    assert hist["balance"] == 300
+    assert [e["amount"] for e in hist["entries"]] == [249, -249, 300]
+    # A refunded scan can't be rerun for free.
+    assert c.post(f"/jobs/{job}/process", headers=h).status_code == 409
+    processor.refund(job)   # refunding twice does nothing
+    assert c.get("/account", headers=h).json()["balance"] == 300

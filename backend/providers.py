@@ -296,5 +296,6 @@ def available_tiers() -> list[dict]:
         if provider_for(tid):
             out.append({"id": tid, "name": t["name"], "detail": t["detail"], "min_photos": t["min_photos"],
                         "quality": t["quality"], "eta": t["eta"], "price": config.price_for_tier(tid),
+                        "points": config.points_for_tier(tid),
                         "export_product_id": config.product_for_tier(tid)})
     return out

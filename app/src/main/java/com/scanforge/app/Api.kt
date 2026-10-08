@@ -32,6 +32,7 @@ data class JobStatus(
     val export_product_id: String? = null,
     val pay_before: Boolean? = null,   // true: buy before processing (service tiers)
     val price: String? = null,
+    val points: Int? = null,           // points this scan costs
 )
 
 /** A processing option offered by the server (only those with an API key configured). */
@@ -44,7 +45,23 @@ data class Tier(
     val quality: Int = 0,          // 1–5, shown as stars
     val eta: String? = null,       // e.g. "About 2 minutes"
     val price: String? = null,     // e.g. "₹99"
+    val points: Int = 0,           // points this option costs
 )
+
+data class NewAccount(val account_id: String, val token: String)
+data class PointPack(val product_id: String, val points: Int, val price: String)
+data class Wallet(val account_id: String, val balance: Int, val packs: List<PointPack>)
+data class LedgerEntry(
+    val id: Long,
+    val amount: Int,          // + credit, - debit
+    val kind: String,         // purchase | scan | refund | bonus
+    val ref: String?,
+    val note: String?,
+    val created_at: Double,   // unix seconds
+)
+data class History(val balance: Int, val entries: List<LedgerEntry>)
+data class PackPurchase(val product_id: String, val token: String)
+data class PackResult(val credited: Int, val balance: Int)
 
 data class TiersResponse(val default: String?, val tiers: List<Tier>)
 data class ProcessRequest(val tier: String?)
@@ -70,6 +87,18 @@ interface ScanApi {
     @GET("tiers")
     suspend fun tiers(): TiersResponse
 
+    @POST("accounts")
+    suspend fun createAccount(): NewAccount
+
+    @GET("account")
+    suspend fun wallet(): Wallet
+
+    @GET("account/history")
+    suspend fun history(): History
+
+    @POST("account/purchase")
+    suspend fun buyPoints(@Body req: PackPurchase): PackResult
+
     @GET("jobs/{id}")
     suspend fun status(@Path("id") id: String): JobStatus
 
@@ -81,6 +110,9 @@ interface ScanApi {
 }
 
 object Api {
+    /** This install's account token, set by [Account.ensure]; sent with every request. */
+    @Volatile var token: String? = null
+
     val scan: ScanApi by lazy {
         val logging = HttpLoggingInterceptor().apply {
             level = HttpLoggingInterceptor.Level.BASIC
@@ -88,7 +120,9 @@ object Api {
         val client = OkHttpClient.Builder()
             // Free ngrok tunnels can answer with a browser-warning page instead of the API.
             .addInterceptor { chain ->
-                chain.proceed(chain.request().newBuilder().header("ngrok-skip-browser-warning", "1").build())
+                val req = chain.request().newBuilder().header("ngrok-skip-browser-warning", "1")
+                token?.let { req.header("Authorization", "Bearer $it") }
+                chain.proceed(req.build())
             }
             .addInterceptor(logging)
             .connectTimeout(30, TimeUnit.SECONDS)

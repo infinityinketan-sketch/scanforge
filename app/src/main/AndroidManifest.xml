@@ -21,6 +21,7 @@
         </activity>
         <activity android:name=".CaptureActivity" />
         <activity android:name=".ResultActivity" />
+        <activity android:name=".WalletActivity" android:label="Wallet" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

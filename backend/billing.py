@@ -9,13 +9,21 @@ SCOPES = ["https://www.googleapis.com/auth/androidpublisher"]
 
 
 def verify_purchase(job_id: str, product_id: str, token: str) -> bool:
-    """Verify a one-time Play Billing purchase via Play Developer API.
-
-    Checks that the product is an export unlock, the purchase is completed, and (when the
-    app attached one) that the purchase was made for this job.
-    """
+    """A per-scan purchase (legacy flow), tied to the job via the obfuscated profile id."""
     if product_id not in config.EXPORT_PRODUCT_IDS:
         return False
+    return _verify(product_id, token, "obfuscatedExternalProfileId", job_id)
+
+
+def verify_pack(account_id: str, product_id: str, token: str) -> bool:
+    """A point-pack purchase, tied to the buyer's account via the obfuscated account id."""
+    if product_id not in config.POINT_PACKS:
+        return False
+    return _verify(product_id, token, "obfuscatedExternalAccountId", account_id)
+
+
+def _verify(product_id: str, token: str, owner_field: str, owner_id: str) -> bool:
+    """Ask the Play Developer API whether this purchase is real, completed, and owned by owner_id."""
     if not (config.SERVICE_ACCOUNT_JSON or config.SERVICE_ACCOUNT_PATH):
         # Dev mode: only allowed when explicitly enabled.
         return config.DEV_BILLING == "1"
@@ -36,5 +44,5 @@ def verify_purchase(job_id: str, product_id: str, token: str) -> bool:
     # purchaseState 0 = purchased (1 = cancelled, 2 = pending)
     if result.get("purchaseState") != 0:
         return False
-    owner = result.get("obfuscatedExternalProfileId")
-    return owner is None or owner == job_id
+    owner = result.get(owner_field)
+    return owner is None or owner == owner_id
