@@ -99,3 +99,33 @@ requires CUDA, and Ubuntu's `apt install colmap` is built without it.
    self-hosted pipeline.)
 2. Link a Google Cloud service account under *Users and permissions* and give its JSON to the backend.
 3. Billing only works for builds installed from a Play testing track, signed with the upload key.
+
+## Going live
+
+The Colab notebook is for testing only (it stops when the tab closes and forgets everything on
+restart). Production runs on **Render** from `render.yaml`:
+
+1. **Backend.** In Render: *New > Blueprint*, pick this repo. It creates an always-on Starter
+   instance with a 10 GB persistent disk at `/var/data` (database, photos, models) and
+   `ENVIRONMENT=production`, which refuses to start with test payments on, a default
+   `SECRET_KEY`, no Google service account, or a non-https `API_BASE`. Paste the secret values:
+   `GOOGLE_SERVICE_ACCOUNT_JSON`, `FAL_KEY` / `TRIPO_API_KEY` / `KIRI_API_KEY`, and the
+   `BACKUP_S3_*` settings. If Render names the service differently, update `API_BASE`.
+   Pushes to `main` redeploy automatically; `/healthz` is the health check.
+2. **Backups.** The database (accounts, points ledger, scans) is snapshotted every 24 h
+   (`BACKUP_EVERY_HOURS`), the newest 14 kept in `/var/data/backups`, and each copy uploaded to
+   any S3-compatible bucket (Cloudflare R2, Backblaze B2, AWS S3) when `BACKUP_S3_ENDPOINT`,
+   `BACKUP_S3_BUCKET`, `BACKUP_S3_KEY_ID` and `BACKUP_S3_SECRET` are set. Restore: stop the
+   service, gunzip a copy over `/var/data/app.db`, start it again.
+3. **Release app.** Create an upload key once and add four repository secrets
+   (*Settings > Secrets and variables > Actions*): `ANDROID_KEYSTORE_BASE64` (the .jks file,
+   base64), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. Then run
+   *Actions > build-release* with the production URL. It produces a signed `.aab` for Play and
+   a signed `.apk`, with a higher `versionCode` on every run. Release builds have the
+   test-payment path switched off. Keep the key file and passwords safe; with Play App Signing a
+   lost upload key can be reset through Play support.
+4. **Play Console.** Create the point packs (`points_100`, `points_300`, `points_1000`), link
+   the service account with "View financial data", upload the `.aab` to the internal testing
+   track, and test real purchases there before production.
+5. **Alerts.** Add an uptime check on `https://<your-service>/healthz` and turn on low-credit
+   alerts in the Tripo, fal.ai and KIRI dashboards.

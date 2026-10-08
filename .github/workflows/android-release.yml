@@ -1,0 +1,86 @@
+name: build-release
+# Signed build for the Play Store. Run it by hand: Actions > build-release > Run workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      api_base:
+        description: "Production backend URL (https://…)"
+        required: true
+        default: "https://scanforge-api.onrender.com"
+      version_name:
+        description: "Version shown to users, e.g. 1.0.0"
+        required: true
+        default: "1.0.0"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check signing secrets and URL
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          API_BASE: ${{ inputs.api_base }}
+        run: |
+          missing=""
+          [ -z "$KS" ] && missing="$missing ANDROID_KEYSTORE_BASE64"
+          [ -z "$KS_PASS" ] && missing="$missing ANDROID_KEYSTORE_PASSWORD"
+          [ -z "$ALIAS" ] && missing="$missing ANDROID_KEY_ALIAS"
+          [ -z "$KEY_PASS" ] && missing="$missing ANDROID_KEY_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "::error::Add these repository secrets (Settings > Secrets and variables > Actions):$missing"
+            exit 1
+          fi
+          case "$API_BASE" in
+            https://*) ;;
+            *) echo "::error::api_base must be the https:// production address"; exit 1 ;;
+          esac
+
+      - name: Restore upload key
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: echo "$KS" | base64 -d > "$RUNNER_TEMP/upload.jks"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Build signed AAB and APK
+        env:
+          SCANFORGE_KEYSTORE: ${{ runner.temp }}/upload.jks
+          SCANFORGE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          SCANFORGE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          SCANFORGE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -o pipefail
+          gradle :app:bundleRelease :app:assembleRelease --console=plain \
+            -PapiBase=${{ inputs.api_base }} \
+            -PversionName=${{ inputs.version_name }} \
+            -PversionCode=$(( ${{ github.run_number }} + 1 )) 2>&1 | tee build.log
+
+      - name: Report build errors
+        if: failure()
+        run: |
+          grep -E -A4 '^e: |What went wrong|^ERROR' build.log 2>/dev/null | head -40 | while IFS= read -r line; do
+            [ -n "$line" ] && echo "::error::$line"
+          done
+
+      - name: Remove key from runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/upload.jks"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scanforge-release-${{ inputs.version_name }}
+          path: |
+            app/build/outputs/bundle/release/*.aab
+            app/build/outputs/apk/release/*.apk

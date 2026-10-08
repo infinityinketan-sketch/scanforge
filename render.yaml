@@ -1,12 +1,15 @@
+# Production backend on Render. Create it from this file ("New > Blueprint" in Render),
+# then paste the secret values (sync: false) in the dashboard. See README "Going live".
 services:
   - type: web
     name: scanforge-api
     runtime: python
     rootDir: backend
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    # One worker: the background processor and SQLite expect a single process.
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /healthz
-    # Persistent disks need a paid instance type. Without one, scans are lost on every restart.
+    # Always-on paid instance: a persistent disk needs one, and customers' points live on it.
     plan: starter
     disk:
       name: scanforge-data
@@ -15,15 +18,43 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
+      - key: ENVIRONMENT
+        value: production          # refuses to start with test-payment or default-secret settings
       - key: DATA_DIR
         value: /var/data
       - key: SECRET_KEY
         generateValue: true
       - key: API_BASE
-        value: https://scanforge-api.onrender.com
-      - key: RUNPOD_API_KEY
-        sync: false
-      - key: RUNPOD_ENDPOINT_ID
-        sync: false
+        value: https://scanforge-api.onrender.com   # change if Render gives the service another name
+      - key: ALLOW_DEV_BILLING
+        value: "0"                 # never 1 in production
+      # Google Play purchase verification (service account JSON, pasted in the dashboard)
       - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: PLAY_PACKAGE_NAME
+        value: com.scanforge.app
+      # 3D services (only options whose key is set are offered in the app)
+      - key: FAL_KEY
+        sync: false
+      - key: TRIPO_API_KEY
+        sync: false
+      - key: KIRI_API_KEY
+        sync: false
+      # Points and packs (1 point = ₹1). Keep PACK_PRICES equal to the Play Console prices.
+      - key: TIER_POINTS
+        value: basic=29,quick=99,hq=249
+      - key: POINT_PACKS
+        value: points_100=100,points_300=300,points_1000=1000
+      - key: PACK_PRICES
+        value: points_100=₹99,points_300=₹279,points_1000=₹849
+      - key: WELCOME_POINTS
+        value: "0"
+      # Off-site backups of the database (any S3-compatible storage, e.g. Cloudflare R2, Backblaze B2)
+      - key: BACKUP_S3_ENDPOINT
+        sync: false
+      - key: BACKUP_S3_BUCKET
+        sync: false
+      - key: BACKUP_S3_KEY_ID
+        sync: false
+      - key: BACKUP_S3_SECRET
         sync: false

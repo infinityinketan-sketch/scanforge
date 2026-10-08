@@ -20,7 +20,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.delenv("RUNPOD_ENDPOINT_ID", raising=False)
     for k in ("TRIPO_API_KEY", "FAL_KEY", "KIRI_API_KEY"):
         monkeypatch.delenv(k, raising=False)
-    for m in ("config", "db", "billing", "providers", "processor", "main"):
+    for m in ("config", "db", "billing", "providers", "processor", "backup", "main"):
         sys.modules.pop(m, None)
     main = importlib.import_module("main")
     from fastapi.testclient import TestClient
@@ -353,3 +353,38 @@ def test_failed_scan_refunds_points(client, monkeypatch):
     assert c.post(f"/jobs/{job}/process", headers=h).status_code == 409
     processor.refund(job)   # refunding twice does nothing
     assert c.get("/account", headers=h).json()["balance"] == 300
+
+
+
+# ---------- production safety and backups ----------
+def test_production_refuses_test_settings(monkeypatch):
+    import config
+    monkeypatch.setattr(config, "ENVIRONMENT", "production")
+    monkeypatch.setattr(config, "DEV_BILLING", "1")
+    monkeypatch.setattr(config, "SECRET_IS_DEFAULT", True)
+    monkeypatch.setattr(config, "SERVICE_ACCOUNT_JSON", "")
+    monkeypatch.setattr(config, "API_BASE", "http://x")
+    problems = " | ".join(config.production_problems())
+    for word in ("ALLOW_DEV_BILLING", "SECRET_KEY", "service account", "https"):
+        assert word in problems
+    monkeypatch.setattr(config, "ENVIRONMENT", "development")
+    assert config.production_problems() == []
+
+
+def test_backup_snapshot_restores_points(client, monkeypatch):
+    import gzip
+    import sqlite3
+    import backup
+    import config
+    h = _account(client)
+    _buy(client, h, "points_300", "tok-backup")
+    for _ in range(3):
+        path = backup.run_once()
+    monkeypatch.setattr(config, "BACKUP_KEEP", 2)
+    backup.prune(config.BACKUP_KEEP)
+    assert len(list(backup.BACKUP_DIR.glob("app-*.db.gz"))) == 2
+    restored = path.with_suffix("").with_suffix(".restored.db")
+    restored.write_bytes(gzip.decompress(path.read_bytes()))
+    total = sqlite3.connect(restored).execute("SELECT SUM(amount) FROM ledger").fetchone()[0]
+    assert total == 300
+    assert backup.upload(path) is False      # no off-site storage configured in tests

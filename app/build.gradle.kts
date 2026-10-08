@@ -6,6 +6,11 @@ plugins {
 // Override at build time:  ./gradlew :app:assembleDebug -PapiBase=https://your-api -PexportProductId=export_unlock
 val apiBase: String = (project.findProperty("apiBase") as String?) ?: "https://chamber-barber-dole.ngrok-free.dev"
 val exportProductId: String = (project.findProperty("exportProductId") as String?) ?: "export_unlock"
+// Play needs a higher versionCode for every upload; the release workflow passes the run number.
+val appVersionCode: Int = (project.findProperty("versionCode") as String?)?.toInt() ?: 1
+val appVersionName: String = (project.findProperty("versionName") as String?) ?: "0.1.0"
+// Upload key for Play, from CI secrets (never committed). Release builds fail without it.
+val keystorePath: String? = System.getenv("SCANFORGE_KEYSTORE")
 
 android {
     namespace = "com.scanforge.app"
@@ -15,11 +20,22 @@ android {
         applicationId = "com.scanforge.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "EXPORT_PRODUCT_ID", "\"$exportProductId\"")
+    }
+
+    signingConfigs {
+        if (keystorePath != null) {
+            create("release") {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("SCANFORGE_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("SCANFORGE_KEY_ALIAS")
+                keyPassword = System.getenv("SCANFORGE_KEY_PASSWORD")
+            }
+        }
     }
 
     buildFeatures {
@@ -34,6 +50,8 @@ android {
         release {
             isMinifyEnabled = false
             manifestPlaceholders["cleartext"] = "false"
+            // Release builds have BuildConfig.DEBUG = false, so the test-payment path is off.
+            signingConfigs.findByName("release")?.let { signingConfig = it }
         }
     }
 

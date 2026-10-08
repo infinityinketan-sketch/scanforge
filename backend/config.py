@@ -110,3 +110,30 @@ SERVICE_ACCOUNT_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_PATH", "")
 
 # Dev ONLY
 DEV_BILLING = os.getenv("ALLOW_DEV_BILLING", "0")
+
+# Database backups (see backup.py). 0 hours turns the daily backup off.
+BACKUP_EVERY_HOURS = float(os.getenv("BACKUP_EVERY_HOURS", "24"))
+BACKUP_KEEP = int(os.getenv("BACKUP_KEEP", "14"))
+BACKUP_S3_ENDPOINT = os.getenv("BACKUP_S3_ENDPOINT", "")   # e.g. https://<account>.r2.cloudflarestorage.com
+BACKUP_S3_BUCKET = os.getenv("BACKUP_S3_BUCKET", "")
+BACKUP_S3_KEY_ID = os.getenv("BACKUP_S3_KEY_ID", "")
+BACKUP_S3_SECRET = os.getenv("BACKUP_S3_SECRET", "")
+
+# "production" turns on start-up safety checks (see main.startup).
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+
+
+def production_problems() -> list[str]:
+    """Settings that must never reach real customers."""
+    if ENVIRONMENT != "production":
+        return []
+    problems = []
+    if DEV_BILLING == "1":
+        problems.append("ALLOW_DEV_BILLING=1 would let anyone add points without paying")
+    if SECRET_IS_DEFAULT:
+        problems.append("SECRET_KEY is the default, so signed download links can be forged")
+    if not (SERVICE_ACCOUNT_JSON or SERVICE_ACCOUNT_PATH):
+        problems.append("no Google service account, so Play purchases can't be verified")
+    if not API_BASE.startswith("https://"):
+        problems.append("API_BASE must be the public https:// address")
+    return problems

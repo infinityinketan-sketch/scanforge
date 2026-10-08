@@ -13,6 +13,7 @@ from fastapi import Body, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+import backup
 import config
 import db
 import processor
@@ -66,9 +67,14 @@ def _result_url(job_id: str):
 
 @app.on_event("startup")
 def startup():
+    problems = config.production_problems()
+    if problems:
+        # Refuse to serve real customers with test settings.
+        raise RuntimeError("Unsafe production settings: " + "; ".join(problems))
     db.init()
     if os.getenv("SCANFORGE_NO_PROCESSOR") != "1":
         processor.start()
+        backup.start()
     if config.SECRET_IS_DEFAULT:
         log.warning("SECRET_KEY is not set: signed URLs are forgeable; manifest and dev-pay are disabled")
     if not config.API_BASE:
