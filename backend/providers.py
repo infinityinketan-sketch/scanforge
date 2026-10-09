@@ -118,7 +118,8 @@ class Tripo:
                 "inputs": inputs,
                 "texture": True,
                 "pbr": True,
-                "texture_quality": "standard",
+                # "detailed" (HD) costs 40 credits instead of 30; textures were the weak point.
+                "texture_quality": config.TRIPO_TEXTURE_QUALITY,
                 # Default output is ~1.5M triangles (45 MB GLB, 75 MB STL): too heavy for phones.
                 "face_limit": config.TRIPO_FACE_LIMIT,
             }

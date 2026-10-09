@@ -164,7 +164,11 @@ class ResultActivity : ComponentActivity() {
                 "❌ Failed: ${s.error}" + refunded +
                     if (photoProblem) "\nTip: retake photos with more overlap and steady lighting." else ""
             }
-            "done" -> if (s.paid) "✅ Ready — download below" else "✅ Model ready! Unlock to export."
+            "done" -> when {
+                s.expired == true -> "🗑 This scan's files were deleted after 90 days, as our privacy notice says."
+                s.paid -> "✅ Ready — download below"
+                else -> "✅ Model ready! Unlock to export."
+            }
             "created" -> when {
                 s.pay_before == true && !s.paid ->
                     "📷 ${s.n_photos} photos uploaded.\nBuilding this model uses ${s.points ?: 0} points " +
@@ -181,10 +185,10 @@ class ResultActivity : ComponentActivity() {
         payBtn.text = if ((s.points ?: 0) > 0) "Use ${s.points} points & build my model" else "Build my model"
         payBtn.visibility = if (s.status == "created" && s.pay_before == true && !s.paid) View.VISIBLE else View.GONE
         unlockBtn.visibility = if (s.status == "done" && !s.paid && s.pay_before != true) View.VISIBLE else View.GONE
-        val paidReady = s.status == "done" && s.paid
+        val paidReady = s.status == "done" && s.paid && s.expired != true
         glbBtn.visibility = if (paidReady) View.VISIBLE else View.GONE
         stlBtn.visibility = glbBtn.visibility
-        previewBtn.visibility = if (s.status == "done") View.VISIBLE else View.GONE
+        previewBtn.visibility = if (s.status == "done" && s.expired != true) View.VISIBLE else View.GONE
     }
 
     private fun download(format: String) {
@@ -195,9 +199,7 @@ class ResultActivity : ComponentActivity() {
                 val f = File(dir, "scan_${jobId}.${format}")
                 // Stream to disk: full-resolution meshes can be tens of MB.
                 withContext(Dispatchers.IO) {
-                    Api.scan.downloadFile(url).byteStream().use { input ->
-                        f.outputStream().use { input.copyTo(it) }
-                    }
+                    Api.download(url, f)
                 }
                 toast("Saved ${f.name}")
                 share(f, if (format == "glb") "model/gltf-binary" else "application/octet-stream")

@@ -1,5 +1,6 @@
 package com.scanforge.app
 
+import android.content.Intent
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
@@ -28,6 +29,8 @@ class WalletActivity : ComponentActivity() {
     private lateinit var historyBox: LinearLayout
     private var dp = 1f
     private var buying = false
+    private var wallet: Wallet? = null
+    private lateinit var accountText: TextView
 
     private val ink = 0xFF1B2330.toInt()
     private val muted = 0xFF5F6B7A.toInt()
@@ -64,6 +67,25 @@ class WalletActivity : ComponentActivity() {
         historyBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(historyBox)
 
+        root.addView(section("Privacy & data"))
+        accountText = label("", 13f, muted).apply { setTextIsSelectable(true) }
+        root.addView(accountText)
+        root.addView(Button(this).apply {
+            text = "Privacy notice"
+            setOnClickListener { Privacy.openNotice(this@WalletActivity, wallet) }
+        })
+        root.addView(Button(this).apply {
+            text = "Delete my data"
+            setTextColor(debit)
+            setOnClickListener {
+                Privacy.confirmDelete(this@WalletActivity, lifecycleScope, wallet?.balance) {
+                    startActivity(Intent(this@WalletActivity, MainActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK))
+                    finish()
+                }
+            }
+        })
+
         setContentView(ScrollView(this).apply { addView(root) })
     }
 
@@ -83,6 +105,8 @@ class WalletActivity : ComponentActivity() {
                     )
                 }
             }
+            this@WalletActivity.wallet = wallet
+            accountText.text = "Account ID: ${wallet.account_id}"
             balanceText.text = "${history.balance} points"
             costsText.text = if (tiers.isEmpty()) "1 point = ₹1"
             else tiers.joinToString("   ·   ") { "${it.name} scan: ${it.points}" }

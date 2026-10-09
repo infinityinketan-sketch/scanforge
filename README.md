@@ -72,12 +72,17 @@ python -m pytest tests     # end-to-end API tests, no GPU / Play needed
 | `PLAY_PACKAGE_NAME` | | Default `com.scanforge.app` |
 | `EXPORT_PRODUCT_IDS` | | Comma-separated in-app products that unlock export. Default `export_unlock` |
 | `ALLOW_DEV_BILLING` | dev only | `1` accepts any purchase when no service account is set. **Never in production** |
-| `DATA_DIR` | | Where photos, models and the SQLite DB live. Default `./data` |
+| `DATA_DIR` | | Where the SQLite DB (and, without R2, photos and models) live. Default `./data` |
+| `R2_ENDPOINT`, `R2_BUCKET`, `R2_KEY_ID`, `R2_SECRET` | production | Cloudflare R2 (any S3-compatible bucket). The phone uploads photos and downloads models straight from the bucket with links that expire within an hour; the live database copy and daily backups go there too. Unset = everything on local disk |
+| `RETENTION_DAYS` | | Photos and models are deleted this many days after a scan. Default 90 |
+| `PRIVACY_CONTACT_EMAIL`, `PRIVACY_COMPANY` | production | Shown in the privacy notice at `/privacy` |
+| `PRIVACY_VERSION` | | Bump when you change the notice; the app asks customers to agree again |
 | `MAX_PHOTOS`, `MAX_PHOTO_MB`, `MIN_PHOTOS`, `PROCESSING_TIMEOUT` | | Limits (200, 25, 8, 1800 s) |
 
-`render.yaml` deploys it to Render. Photos and models are stored on local disk, so the
-service needs a **persistent disk** mounted at `DATA_DIR`. Without one, every redeploy or
-restart wipes all scans.
+`render.yaml` deploys it to Render as a Docker image (`backend/Dockerfile`): the API runs
+under [Litestream](https://litestream.io), which streams every database change to R2 within
+seconds and restores the latest copy when the server starts without a database
+(`backend/deploy/start.sh`). Keep the persistent disk anyway: it holds scans in progress.
 
 ## GPU pipeline
 
@@ -109,23 +114,37 @@ restart). Production runs on **Render** from `render.yaml`:
    instance with a 10 GB persistent disk at `/var/data` (database, photos, models) and
    `ENVIRONMENT=production`, which refuses to start with test payments on, a default
    `SECRET_KEY`, no Google service account, or a non-https `API_BASE`. Paste the secret values:
-   `GOOGLE_SERVICE_ACCOUNT_JSON`, `FAL_KEY` / `TRIPO_API_KEY` / `KIRI_API_KEY`, and the
-   `BACKUP_S3_*` settings. If Render names the service differently, update `API_BASE`.
-   Pushes to `main` redeploy automatically; `/healthz` is the health check.
-2. **Backups.** The database (accounts, points ledger, scans) is snapshotted every 24 h
-   (`BACKUP_EVERY_HOURS`), the newest 14 kept in `/var/data/backups`, and each copy uploaded to
-   any S3-compatible bucket (Cloudflare R2, Backblaze B2, AWS S3) when `BACKUP_S3_ENDPOINT`,
-   `BACKUP_S3_BUCKET`, `BACKUP_S3_KEY_ID` and `BACKUP_S3_SECRET` are set. Restore: stop the
-   service, gunzip a copy over `/var/data/app.db`, start it again.
-3. **Release app.** Create an upload key once and add four repository secrets
+   `GOOGLE_SERVICE_ACCOUNT_JSON`, `FAL_KEY` / `TRIPO_API_KEY` / `KIRI_API_KEY`, the `R2_*`
+   settings and `PRIVACY_CONTACT_EMAIL` (production refuses to start without it). If Render
+   names the service differently, update `API_BASE`. Pushes to `main` redeploy automatically;
+   `/healthz` is the health check.
+2. **Cloudflare R2.** Create a bucket (location hint: Asia-Pacific) and an R2 API token with
+   *Object Read & Write* on that bucket only; put the account endpoint, bucket, key ID and secret
+   in `R2_*`. Add two lifecycle rules in the bucket settings as a safety net behind the server's
+   own clean-up: prefix `jobs/` delete after `RETENTION_DAYS` + 7 days, and prefix `scanforge/`
+   (daily backups) delete after 30 days. No CORS rule is needed: only the app talks to the bucket.
+3. **Backups.** Two layers, both in R2:
+   - *Live* (Litestream, under `litestream/`): every change within seconds. To recover, just
+     start the service on an empty disk; it restores itself. For a point in time:
+     `litestream restore -config deploy/litestream.yml -timestamp 2026-10-01T12:00:00Z -o /tmp/app.db /var/data/app.db`.
+   - *Daily* snapshots (`BACKUP_EVERY_HOURS`), the newest 14 kept in `/var/data/backups` and each
+     uploaded under `scanforge/`. Restore: stop the service, gunzip a copy over
+     `/var/data/app.db`, start it again. (`BACKUP_S3_*` sends these to a different bucket.)
+4. **Privacy (India's DPDP Act).** The app asks for consent to the notice at `/privacy` before
+   the first scan and records the version and time. *Wallet → Delete my data* deletes photos and
+   models, revokes the account and forfeits remaining points; payment records stay in the ledger
+   for accounting. Files are deleted automatically after `RETENTION_DAYS`. Have a lawyer review
+   `backend/privacy.py` before launch, and use `https://<your-service>/privacy` as the privacy
+   policy URL and `…/privacy#delete` as the account-deletion URL in Play Console.
+5. **Release app.** Create an upload key once and add four repository secrets
    (*Settings > Secrets and variables > Actions*): `ANDROID_KEYSTORE_BASE64` (the .jks file,
    base64), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. Then run
    *Actions > build-release* with the production URL. It produces a signed `.aab` for Play and
    a signed `.apk`, with a higher `versionCode` on every run. Release builds have the
    test-payment path switched off. Keep the key file and passwords safe; with Play App Signing a
    lost upload key can be reset through Play support.
-4. **Play Console.** Create the point packs (`points_100`, `points_300`, `points_1000`), link
+6. **Play Console.** Create the point packs (`points_100`, `points_300`, `points_1000`), link
    the service account with "View financial data", upload the `.aab` to the internal testing
    track, and test real purchases there before production.
-5. **Alerts.** Add an uptime check on `https://<your-service>/healthz` and turn on low-credit
+7. **Alerts.** Add an uptime check on `https://<your-service>/healthz` and turn on low-credit
    alerts in the Tripo, fal.ai and KIRI dashboards.

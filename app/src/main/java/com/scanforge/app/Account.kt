@@ -44,6 +44,9 @@ object Account {
         }
     }
 
+    /** Forget this install's account (after the customer deleted their data). */
+    suspend fun forget(ctx: Context) = reset(ctx)
+
     private suspend fun reset(ctx: Context) = lock.withLock {
         Api.token = null
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()

@@ -14,3 +14,5 @@ jobs:
           python-version: "3.11"
       - run: pip install -r backend/requirements.txt -r backend/requirements-dev.txt
       - run: python -m pytest backend/tests -q
+      # The production image (API + Litestream) must build.
+      - run: docker build -t scanforge-api backend

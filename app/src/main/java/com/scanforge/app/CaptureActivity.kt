@@ -30,6 +30,12 @@ import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -323,13 +329,7 @@ class CaptureActivity : ComponentActivity() {
             try {
                 val id = withContext(Dispatchers.IO) {
                     val job = Api.scan.createJob(CreateRequest(tier))
-                    val parts = shots.map {
-                        MultipartBody.Part.createFormData(
-                            "photos", it.name, it.asRequestBody("image/jpeg".toMediaType())
-                        )
-                    }
-                    val up = Api.scan.uploadPhotos(job.job_id, parts)
-                    if (!up.isSuccessful) error("upload rejected (HTTP ${up.code()})")
+                    uploadShots(job.job_id)
                     // With a chosen option the scan is paid for on the next screen, which then
                     // starts processing. Without one (server has no services) start right away.
                     if (tier == null) {
@@ -353,6 +353,44 @@ class CaptureActivity : ComponentActivity() {
                 updateUi() // photos are kept, so the user can retry the upload
             }
         }
+    }
+
+    /**
+     * Straight to file storage when the server offers it (faster, and photos don't pass through
+     * the server); otherwise one multipart upload to the API.
+     */
+    private suspend fun uploadShots(jobId: String) = coroutineScope {
+        val links = Api.scan.uploadUrls(jobId, UploadUrlsRequest(shots.size))
+        val direct = links.body()?.takeIf { links.isSuccessful && it.direct && it.urls.size == shots.size }
+        if (direct == null) {
+            if (links.code() == 403 || links.code() == 409 || links.code() == 413) {
+                error("upload rejected (HTTP ${links.code()})")
+            }
+            val parts = shots.map {
+                MultipartBody.Part.createFormData("photos", it.name, it.asRequestBody("image/jpeg".toMediaType()))
+            }
+            val up = Api.scan.uploadPhotos(jobId, parts)
+            if (!up.isSuccessful) error("upload rejected (HTTP ${up.code()})")
+            return@coroutineScope
+        }
+        val lanes = Semaphore(4)   // a few at a time: fast on Wi-Fi, gentle on mobile data
+        shots.zip(direct.urls).map { (file, url) ->
+            async(Dispatchers.IO) {
+                lanes.withPermit {
+                    var attempt = 0
+                    while (true) {
+                        try {
+                            Api.putFile(url, file, direct.content_type); break
+                        } catch (e: Exception) {
+                            if (++attempt >= 3) throw e
+                            delay(1000L * attempt)
+                        }
+                    }
+                }
+            }
+        }.awaitAll()
+        val done = Api.scan.photosComplete(jobId)
+        if (done.n_photos < shots.size) error("only ${done.n_photos} of ${shots.size} photos arrived")
     }
 
     override fun onDestroy() {

@@ -15,6 +15,7 @@ import time
 import config
 import db
 import providers
+import storage
 
 log = logging.getLogger("scanforge.processor")
 POLL_SECONDS = 5
@@ -92,6 +93,33 @@ def make_preview(src, dest, max_texture=512):
         shutil.copy(src, dest)
 
 
+def gather_photos(job_id: str) -> list:
+    """The job's photos on local disk, pulling direct uploads in from file storage first
+    (inbound transfer is free on R2 and Render)."""
+    pdir = config.JOBS_DIR / job_id / "photos"
+    store = storage.get()
+    if store.direct:
+        for obj in store.list(storage.photo_prefix(job_id)):
+            dest = pdir / obj["key"].rsplit("/", 1)[-1]
+            if not dest.is_file():
+                store.download(obj["key"], dest)
+    return sorted(p for p in pdir.iterdir() if p.is_file()) if pdir.is_dir() else []
+
+
+def publish_outputs(job_id: str):
+    """With R2: move the finished files to the bucket and free the server's disk."""
+    store = storage.get()
+    if not store.direct:
+        return
+    jdir = config.JOBS_DIR / job_id
+    for name, ctype in storage.OUTPUTS.items():
+        if (jdir / name).is_file():
+            store.upload(jdir / name, f"jobs/{job_id}/{name}", ctype)
+    shutil.rmtree(jdir, ignore_errors=True)
+    if db.get_job(job_id) is None:     # the customer deleted their data meanwhile
+        store.delete_job(job_id)
+
+
 def step(job: dict):
     """Advance one job by one stage. Safe to call repeatedly."""
     job_id = job["id"]
@@ -101,7 +129,7 @@ def step(job: dict):
     jdir = config.JOBS_DIR / job_id
     try:
         if job["status"] == "queued":
-            photos = sorted(p for p in (jdir / "photos").iterdir() if p.is_file())
+            photos = gather_photos(job_id)
             task = prov.submit(photos)
             db.claim_status(job_id, ("queued",), "processing", provider_task=task,
                             started=time.time(), progress=0)
@@ -118,10 +146,12 @@ def step(job: dict):
         elif p.state == "failed":
             _fail(job_id, p.error or "the 3D service could not build a model")
         else:
+            jdir.mkdir(parents=True, exist_ok=True)   # e.g. a restart on a fresh disk
             tmp = jdir / "download.glb"
             prov.fetch(p.url, tmp)
             build_outputs(jdir, tmp)
             tmp.replace(jdir / "model.glb")
+            publish_outputs(job_id)
             db.claim_status(job_id, ("processing",), "done", error=None, progress=100, finished=time.time())
             _errors.pop(job_id, None)
             log.info("job %s done", job_id)
@@ -134,9 +164,33 @@ def step(job: dict):
             _fail(job_id, f"3D service unreachable: {str(e)[:200]}")
 
 
+def purge_expired(now=None) -> int:
+    """Delete photos and models once a scan is older than RETENTION_DAYS (privacy notice)."""
+    now = now or time.time()
+    store = storage.get()
+    n = 0
+    for job in db.jobs_to_purge(now - config.RETENTION_DAYS * 86400):
+        try:
+            store.delete_job(job["id"])
+            db.update_job(job["id"], purged=1)
+            n += 1
+        except Exception:  # noqa: BLE001 - try again next round
+            log.exception("could not delete files of job %s", job["id"])
+    if n:
+        log.info("deleted files of %d expired scans", n)
+    return n
+
+
+_last_purge = 0.0
+
+
 def run_once():
+    global _last_purge
     for job in db.jobs_in(("queued", "processing")):
         step(job)
+    if time.time() - _last_purge > 3600:
+        _last_purge = time.time()
+        purge_expired()
 
 
 def _loop():

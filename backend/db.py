@@ -10,8 +10,11 @@ _local = threading.local()
 def _conn():
     c = getattr(_local, "conn", None)
     if c is None:
-        c = sqlite3.connect(DB_PATH, check_same_thread=False)
+        c = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10)
         c.row_factory = sqlite3.Row
+        # WAL: readers don't block the writer, and Litestream replicates from the WAL.
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA busy_timeout=10000")
         _local.conn = c
     return c
 
@@ -35,7 +38,8 @@ def init():
     # Columns added after the first release; add them to existing databases.
     have = {r["name"] for r in c.execute("PRAGMA table_info(jobs)")}
     for col, decl in (("tier", "TEXT"), ("provider", "TEXT"), ("provider_task", "TEXT"),
-                      ("progress", "INTEGER DEFAULT 0"), ("account_id", "TEXT"), ("cost", "INTEGER")):
+                      ("progress", "INTEGER DEFAULT 0"), ("account_id", "TEXT"), ("cost", "INTEGER"),
+                      ("purged", "INTEGER DEFAULT 0")):
         if col not in have:
             c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {decl}")
     # Customer accounts (one per app install for now) and their points ledger.
@@ -45,6 +49,11 @@ def init():
             token_hash TEXT UNIQUE NOT NULL,
             created_at REAL)"""
     )
+    have = {r["name"] for r in c.execute("PRAGMA table_info(accounts)")}
+    for col, decl in (("consent_version", "TEXT"), ("consent_at", "REAL"), ("deleted_at", "REAL")):
+        if col not in have:
+            c.execute(f"ALTER TABLE accounts ADD COLUMN {col} {decl}")
+    c.execute("CREATE INDEX IF NOT EXISTS jobs_account ON jobs(account_id)")
     # Every change to a balance is a row: + purchase / refund / bonus, - scan.
     # The balance is always the sum, so it can't drift from the history the customer sees.
     c.execute(
@@ -127,8 +136,50 @@ def create_account(account_id, token_hash):
 
 
 def account_for_token(token_hash):
-    row = _conn().execute("SELECT id FROM accounts WHERE token_hash=?", (token_hash,)).fetchone()
+    row = _conn().execute("SELECT id FROM accounts WHERE token_hash=? AND deleted_at IS NULL",
+                          (token_hash,)).fetchone()
     return row["id"] if row else None
+
+
+def get_account(account_id):
+    row = _conn().execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def record_consent(account_id, version):
+    c = _conn()
+    c.execute("UPDATE accounts SET consent_version=?, consent_at=? WHERE id=?",
+              (version, time.time(), account_id))
+    c.commit()
+
+
+def jobs_for_account(account_id):
+    return [dict(r) for r in _conn().execute(
+        "SELECT * FROM jobs WHERE account_id=?", (account_id,)).fetchall()]
+
+
+def close_account(account_id):
+    """Revoke the account's token and delete its scans. Ledger rows stay: they are the record
+    of payments, which accounting law requires us to keep. Returns the points forfeited."""
+    with _money:
+        c = _conn()
+        left = balance(account_id)
+        now = time.time()
+        if left:
+            c.execute("INSERT OR IGNORE INTO ledger(account_id, amount, kind, ref, note, created_at) "
+                      "VALUES(?, ?, 'closed', ?, 'Account deleted', ?)", (account_id, -left, account_id, now))
+        # The token hash must stay unique and unguessable once revoked.
+        c.execute("UPDATE accounts SET deleted_at=?, token_hash='deleted:' || id WHERE id=?", (now, account_id))
+        c.execute("DELETE FROM jobs WHERE account_id=?", (account_id,))
+        c.commit()
+        return left
+
+
+def jobs_to_purge(cutoff):
+    """Finished scans older than the retention period whose files haven't been deleted yet."""
+    return [dict(r) for r in _conn().execute(
+        "SELECT * FROM jobs WHERE created_at < ? AND COALESCE(purged, 0)=0 "
+        "AND status NOT IN ('queued', 'processing')", (cutoff,)).fetchall()]
 
 
 def balance(account_id):

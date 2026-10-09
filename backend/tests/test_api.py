@@ -20,7 +20,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.delenv("RUNPOD_ENDPOINT_ID", raising=False)
     for k in ("TRIPO_API_KEY", "FAL_KEY", "KIRI_API_KEY"):
         monkeypatch.delenv(k, raising=False)
-    for m in ("config", "db", "billing", "providers", "processor", "backup", "main"):
+    for m in ("config", "db", "billing", "providers", "processor", "backup", "storage", "privacy", "main"):
         sys.modules.pop(m, None)
     main = importlib.import_module("main")
     from fastapi.testclient import TestClient
@@ -313,7 +313,7 @@ def test_scan_spends_points(client, monkeypatch):
     h = _account(c)
     job = c.post("/jobs", json={"tier": "quick"}, headers=h).json()["job_id"]
     files = [("photos", (f"p{i}.jpg", _real_jpeg(i), "image/jpeg")) for i in range(12)]
-    c.post(f"/jobs/{job}/photos", files=files)
+    c.post(f"/jobs/{job}/photos", files=files, headers=h)
     assert c.get(f"/jobs/{job}").json()["points"] == 99
 
     r = c.post(f"/jobs/{job}/process", headers=h)
@@ -340,7 +340,7 @@ def test_failed_scan_refunds_points(client, monkeypatch):
     _buy(c, h, "points_300", "tok-c")
     job = c.post("/jobs", json={"tier": "hq"}, headers=h).json()["job_id"]
     files = [("photos", (f"p{i}.jpg", _real_jpeg(i), "image/jpeg")) for i in range(20)]
-    c.post(f"/jobs/{job}/photos", files=files)
+    c.post(f"/jobs/{job}/photos", files=files, headers=h)
     assert c.post(f"/jobs/{job}/process", headers=h).json() == {"status": "queued"}
     assert c.get("/account", headers=h).json()["balance"] == 51
     processor.run_once()
@@ -365,7 +365,8 @@ def test_production_refuses_test_settings(monkeypatch):
     monkeypatch.setattr(config, "SERVICE_ACCOUNT_JSON", "")
     monkeypatch.setattr(config, "API_BASE", "http://x")
     problems = " | ".join(config.production_problems())
-    for word in ("ALLOW_DEV_BILLING", "SECRET_KEY", "service account", "https"):
+    monkeypatch.setattr(config, "PRIVACY_CONTACT_EMAIL", "")
+    for word in ("ALLOW_DEV_BILLING", "SECRET_KEY", "service account", "https", "PRIVACY_CONTACT_EMAIL"):
         assert word in problems
     monkeypatch.setattr(config, "ENVIRONMENT", "development")
     assert config.production_problems() == []
@@ -388,3 +389,63 @@ def test_backup_snapshot_restores_points(client, monkeypatch):
     total = sqlite3.connect(restored).execute("SELECT SUM(amount) FROM ledger").fetchone()[0]
     assert total == 300
     assert backup.upload(path) is False      # no off-site storage configured in tests
+
+
+# ---------- privacy ----------
+def test_privacy_notice_and_consent(client, monkeypatch):
+    import config
+    c = client
+    monkeypatch.setattr(config, "PRIVACY_CONTACT_EMAIL", "privacy@example.com")
+    page = c.get("/privacy")
+    assert page.status_code == 200 and "text/html" in page.headers["content-type"]
+    for text in ("privacy@example.com", "90 days", "Delete my data", "Data Protection Board"):
+        assert text in page.text
+    assert "tripo" not in page.text.lower() and "kiri" not in page.text.lower()
+
+    h = _account(c)
+    acc = c.get("/account", headers=h).json()
+    assert acc["consent_version"] is None and acc["privacy_version"] == config.PRIVACY_VERSION
+    assert c.post("/account/consent", json={"version": "old"}, headers=h).status_code == 409
+    assert c.post("/account/consent", json={"version": config.PRIVACY_VERSION}, headers=h).status_code == 200
+    assert c.get("/account", headers=h).json()["consent_version"] == config.PRIVACY_VERSION
+
+
+def test_delete_my_data(client, monkeypatch):
+    import config
+    import db
+    c = client
+    h = _account(c)
+    account = c.get("/account", headers=h).json()["account_id"]
+    _buy(c, h, "points_300", "tok-del")
+    job = c.post("/jobs", headers=h).json()["job_id"]
+    c.post(f"/jobs/{job}/photos", files=[("photos", ("p.jpg", b"\xff\xd8x", "image/jpeg"))], headers=h)
+    assert (config.JOBS_DIR / job / "photos").is_dir()
+
+    r = c.delete("/account", headers=h).json()
+    assert r == {"deleted": True, "forfeited_points": 300}
+    assert not (config.JOBS_DIR / job).exists()          # photos gone
+    assert c.get(f"/jobs/{job}").status_code == 404
+    assert c.get("/account", headers=h).status_code == 401   # token revoked
+    # Payment records remain, and the balance is closed to zero.
+    kinds = [e["kind"] for e in db.history(account)]
+    assert kinds == ["closed", "purchase"] and db.balance(account) == 0
+    # A purchase token can't be replayed onto a new account after deletion.
+    h2 = _account(c)
+    assert _buy(c, h2, "points_300", "tok-del").json()["credited"] == 0
+
+
+def test_files_deleted_after_retention(client, monkeypatch):
+    import time
+
+    import config
+    import db
+    import processor
+    c = client
+    old = _new_job(c)
+    new = _new_job(c)
+    db.update_job(old, created_at=time.time() - (config.RETENTION_DAYS + 1) * 86400, status="done")
+    assert processor.purge_expired() == 1
+    assert not (config.JOBS_DIR / old).exists() and (config.JOBS_DIR / new).exists()
+    st = c.get(f"/jobs/{old}").json()
+    assert st["expired"] and "preview_url" not in st and "download" not in st
+    assert processor.purge_expired() == 0                 # once only

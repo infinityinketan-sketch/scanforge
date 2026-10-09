@@ -1,0 +1,13 @@
+# Continuous off-site copy of the database (customers' points) to S3-compatible storage.
+# Values come from the environment; see deploy/start.sh.
+dbs:
+  - path: ${DATA_DIR}/app.db
+    replica:
+      type: s3
+      endpoint: ${LITESTREAM_ENDPOINT}
+      bucket: ${LITESTREAM_BUCKET}
+      path: litestream/app.db
+      region: ${LITESTREAM_REGION}
+      access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+      secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+      force-path-style: true

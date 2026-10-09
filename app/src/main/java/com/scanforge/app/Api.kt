@@ -1,19 +1,24 @@
 package com.scanforge.app
 
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.ResponseBody
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.Body
+import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.Multipart
 import retrofit2.http.POST
 import retrofit2.http.Part
 import retrofit2.http.Path
 import retrofit2.http.Url
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 data class CreateJobResponse(val job_id: String)
@@ -33,6 +38,7 @@ data class JobStatus(
     val pay_before: Boolean? = null,   // true: buy before processing (service tiers)
     val price: String? = null,
     val points: Int? = null,           // points this scan costs
+    val expired: Boolean? = null,      // files deleted after the retention period
 )
 
 /** A processing option offered by the server (only those with an API key configured). */
@@ -50,7 +56,16 @@ data class Tier(
 
 data class NewAccount(val account_id: String, val token: String)
 data class PointPack(val product_id: String, val points: Int, val price: String)
-data class Wallet(val account_id: String, val balance: Int, val packs: List<PointPack>)
+data class Wallet(
+    val account_id: String,
+    val balance: Int,
+    val packs: List<PointPack>,
+    val consent_version: String? = null,   // privacy notice version this account agreed to
+    val privacy_version: String? = null,   // current version (null: older server, no consent step)
+    val privacy_url: String? = null,
+)
+data class ConsentRequest(val version: String)
+data class DeleteResult(val deleted: Boolean, val forfeited_points: Int)
 data class LedgerEntry(
     val id: Long,
     val amount: Int,          // + credit, - debit
@@ -67,6 +82,16 @@ data class TiersResponse(val default: String?, val tiers: List<Tier>)
 data class ProcessRequest(val tier: String?)
 data class CreateRequest(val tier: String?)
 
+data class UploadUrlsRequest(val count: Int)
+/** direct=false: this server takes photos itself (multipart). Otherwise one presigned PUT per photo. */
+data class UploadUrls(
+    val direct: Boolean,
+    val urls: List<String> = emptyList(),
+    val content_type: String = "image/jpeg",
+    val max_bytes: Long = 0,
+)
+data class PhotosComplete(val n_photos: Int, val rejected: Int = 0)
+
 data class VerifyRequest(val job_id: String, val product_id: String, val token: String)
 data class VerifyResponse(val paid: Boolean)
 
@@ -81,6 +106,12 @@ interface ScanApi {
         @Part photos: List<MultipartBody.Part>,
     ): Response<Unit>
 
+    @POST("jobs/{id}/upload-urls")
+    suspend fun uploadUrls(@Path("id") id: String, @Body req: UploadUrlsRequest): Response<UploadUrls>
+
+    @POST("jobs/{id}/photos/complete")
+    suspend fun photosComplete(@Path("id") id: String): PhotosComplete
+
     @POST("jobs/{id}/process")
     suspend fun process(@Path("id") id: String, @Body req: ProcessRequest): Response<Unit>
 
@@ -92,6 +123,12 @@ interface ScanApi {
 
     @GET("account")
     suspend fun wallet(): Wallet
+
+    @POST("account/consent")
+    suspend fun consent(@Body req: ConsentRequest): Response<Unit>
+
+    @DELETE("account")
+    suspend fun deleteAccount(): DeleteResult
 
     @GET("account/history")
     suspend fun history(): History
@@ -134,5 +171,39 @@ object Api {
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(ScanApi::class.java)
+    }
+
+    /**
+     * Plain client for presigned file-storage links. It must not add our Authorization header:
+     * the link carries its own signature, and storage rejects requests with two.
+     */
+    private val files: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(120, TimeUnit.SECONDS)
+            .writeTimeout(120, TimeUnit.SECONDS)
+            .build()
+    }
+
+    private fun isOurs(url: String) = url.startsWith(BuildConfig.API_BASE.trimEnd('/'))
+
+    /** PUT a file to a presigned upload link (blocking; call from Dispatchers.IO). */
+    fun putFile(url: String, file: File, contentType: String) {
+        val req = Request.Builder().url(url).put(file.asRequestBody(contentType.toMediaType())).build()
+        files.newCall(req).execute().use { r ->
+            if (!r.isSuccessful) error("photo upload rejected (HTTP ${r.code})")
+        }
+    }
+
+    /** Save a download link to [dest]: our API links go through [scan], storage links don't. */
+    suspend fun download(url: String, dest: File) {
+        if (isOurs(url)) {
+            scan.downloadFile(url).byteStream().use { input -> dest.outputStream().use { input.copyTo(it) } }
+            return
+        }
+        files.newCall(Request.Builder().url(url).build()).execute().use { r ->
+            if (!r.isSuccessful) error("HTTP ${r.code}")
+            r.body!!.byteStream().use { input -> dest.outputStream().use { input.copyTo(it) } }
+        }
     }
 }

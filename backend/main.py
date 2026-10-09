@@ -10,14 +10,16 @@ import httpx
 import secrets
 
 from fastapi import Body, FastAPI, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 import backup
 import config
 import db
+import privacy
 import processor
 import providers
+import storage
 from billing import verify_pack, verify_purchase
 
 log = logging.getLogger("scanforge")
@@ -126,7 +128,43 @@ def _packs():
 @app.get("/account")
 def account_summary(authorization: str | None = Header(None)):
     account = _account(authorization)
-    return {"account_id": account, "balance": db.balance(account), "packs": _packs()}
+    acc = db.get_account(account)
+    return {"account_id": account, "balance": db.balance(account), "packs": _packs(),
+            "consent_version": acc["consent_version"], "privacy_version": config.PRIVACY_VERSION,
+            "privacy_url": f"{config.API_BASE}/privacy"}
+
+
+# ---------- privacy ----------
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy_notice():
+    return privacy.notice_html()
+
+
+class ConsentReq(BaseModel):
+    version: str
+
+
+@app.post("/account/consent")
+def give_consent(req: ConsentReq, authorization: str | None = Header(None)):
+    """The customer agreed to the privacy notice shown in the app (recorded with the time)."""
+    account = _account(authorization)
+    if req.version != config.PRIVACY_VERSION:
+        raise HTTPException(409, "the privacy notice has changed; please review it again")
+    db.record_consent(account, req.version)
+    return {"consent_version": req.version}
+
+
+@app.delete("/account")
+def delete_account(authorization: str | None = Header(None)):
+    """Withdraw consent and erase: photos and models deleted now, token revoked, remaining
+    points forfeited. Payment records stay in the ledger (accounting law)."""
+    account = _account(authorization)
+    store = storage.get()
+    for job in db.jobs_for_account(account):
+        store.delete_job(job["id"])
+    forfeited = db.close_account(account)
+    log.info("account %s deleted (%d points forfeited)", account, forfeited)
+    return {"deleted": True, "forfeited_points": forfeited}
 
 
 @app.get("/account/history")
@@ -177,13 +215,66 @@ def create_job(req: CreateReq | None = Body(None), authorization: str | None = H
     return {"job_id": job_id, "tier": tier}
 
 
-@app.post("/jobs/{job_id}/photos")
-async def upload_photos(job_id: str, photos: list[UploadFile] = File(...)):
+def _open_job(job_id: str, authorization: str | None) -> dict:
+    """A job still taking photos, checked against the caller's account when it has an owner."""
     job = db.get_job(job_id)
     if not job:
         raise HTTPException(404, "job not found")
+    if job["account_id"] and _account(authorization, required=False) != job["account_id"]:
+        raise HTTPException(403, "this scan belongs to another account")
     if job["status"] != "created":
         raise HTTPException(409, "job already submitted")
+    return job
+
+
+def _local_photos(job_id: str) -> list[Path]:
+    pdir = config.JOBS_DIR / job_id / "photos"
+    return [p for p in pdir.iterdir() if p.suffix.lower() in PHOTO_EXT] if pdir.is_dir() else []
+
+
+class UploadUrlsReq(BaseModel):
+    count: int
+
+
+@app.post("/jobs/{job_id}/upload-urls")
+def upload_urls(job_id: str, req: UploadUrlsReq, authorization: str | None = Header(None)):
+    """Presigned links so the phone uploads photos straight to file storage.
+    {"direct": false} means this server takes photos itself: use POST /jobs/{id}/photos."""
+    store = storage.get()
+    if not store.direct:
+        return {"direct": False}
+    _open_job(job_id, authorization)
+    if req.count < 1:
+        raise HTTPException(400, "count must be at least 1")
+    have = len(store.list(storage.photo_prefix(job_id))) + len(_local_photos(job_id))
+    if have + req.count > config.MAX_PHOTOS:
+        raise HTTPException(413, f"at most {config.MAX_PHOTOS} photos per job")
+    stamp = int(time.time() * 1000)
+    urls = [store.put_url(f"{storage.photo_prefix(job_id)}{stamp}_{i:04d}.jpg", storage.PHOTO_TYPE, 3600)
+            for i in range(req.count)]
+    return {"direct": True, "urls": urls, "content_type": storage.PHOTO_TYPE,
+            "max_bytes": config.MAX_PHOTO_BYTES}
+
+
+@app.post("/jobs/{job_id}/photos/complete")
+def photos_complete(job_id: str, authorization: str | None = Header(None)):
+    """After direct uploads: count what arrived (dropping oversized or empty files). Safe to repeat."""
+    store = storage.get()
+    job = _open_job(job_id, authorization)
+    if not store.direct:
+        return {"n_photos": job["n_photos"]}
+    objs = store.list(storage.photo_prefix(job_id))
+    bad = [o["key"] for o in objs if not 0 < o["size"] <= config.MAX_PHOTO_BYTES]
+    store.delete(bad)
+    n = len(objs) - len(bad) + len(_local_photos(job_id))
+    db.update_job(job_id, n_photos=n)
+    return {"n_photos": n, "rejected": len(bad)}
+
+
+@app.post("/jobs/{job_id}/photos")
+async def upload_photos(job_id: str, photos: list[UploadFile] = File(...),
+                        authorization: str | None = Header(None)):
+    job = _open_job(job_id, authorization)
     if job["n_photos"] + len(photos) > config.MAX_PHOTOS:
         raise HTTPException(413, f"at most {config.MAX_PHOTOS} photos per job")
     pdir = config.JOBS_DIR / job_id / "photos"
@@ -385,11 +476,21 @@ async def job_status(job_id: str):
         "price": config.price_for_tier(job["tier"]),
         "points": config.points_for_tier(job["tier"]),
     }
-    if job["status"] == "done":
-        out["preview_url"] = _signed("preview", job_id, f"/jobs/{job_id}/preview", 3600)
+    if job.get("purged"):
+        out["expired"] = True   # files deleted after the retention period
+    elif job["status"] == "done":
+        jdir = config.JOBS_DIR / job_id
+        store = storage.get()
+        # Files still on this server go through signed API links; files in R2 are fetched
+        # straight from the bucket (no server bandwidth).
+        remote = store.direct and not (jdir / "model.glb").is_file()
+        out["preview_url"] = (store.get_url(f"jobs/{job_id}/preview.glb", 3600) if remote
+                              else _signed("preview", job_id, f"/jobs/{job_id}/preview", 3600))
         if job["paid"]:
             out["download"] = {
-                fmt: _signed("download", job_id, f"/jobs/{job_id}/download", 900, f"format={fmt}&")
+                fmt: (store.get_url(f"jobs/{job_id}/model.{fmt}", 900, f"scanforge_{job_id}.{fmt}")
+                      if remote else
+                      _signed("download", job_id, f"/jobs/{job_id}/download", 900, f"format={fmt}&"))
                 for fmt in ("glb", "stl")
             }
     return out

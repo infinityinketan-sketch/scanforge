@@ -3,11 +3,11 @@
 services:
   - type: web
     name: scanforge-api
-    runtime: python
-    rootDir: backend
-    buildCommand: pip install -r requirements.txt
-    # One worker: the background processor and SQLite expect a single process.
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    # Docker image = the API plus Litestream (continuous database copy to R2). See backend/Dockerfile.
+    # One uvicorn worker: the background processor and SQLite expect a single process.
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
     healthCheckPath: /healthz
     # Always-on paid instance: a persistent disk needs one, and customers' points live on it.
     plan: starter
@@ -16,8 +16,6 @@ services:
       mountPath: /var/data
       sizeGB: 10
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.11.9"
       - key: ENVIRONMENT
         value: production          # refuses to start with test-payment or default-secret settings
       - key: DATA_DIR
@@ -49,12 +47,20 @@ services:
         value: points_100=₹99,points_300=₹279,points_1000=₹849
       - key: WELCOME_POINTS
         value: "0"
-      # Off-site backups of the database (any S3-compatible storage, e.g. Cloudflare R2, Backblaze B2)
-      - key: BACKUP_S3_ENDPOINT
+      # Cloudflare R2: photos and models (phone uploads/downloads directly), the live database
+      # copy (Litestream) and daily backups. Without R2_BUCKET everything stays on the disk.
+      - key: R2_ENDPOINT
+        sync: false                # https://<account id>.r2.cloudflarestorage.com
+      - key: R2_BUCKET
         sync: false
-      - key: BACKUP_S3_BUCKET
+      - key: R2_KEY_ID
         sync: false
-      - key: BACKUP_S3_KEY_ID
+      - key: R2_SECRET
         sync: false
-      - key: BACKUP_S3_SECRET
+      - key: RETENTION_DAYS
+        value: "90"                # photos and models are deleted this long after a scan
+      # Privacy notice (GET /privacy)
+      - key: PRIVACY_CONTACT_EMAIL
+        sync: false
+      - key: PRIVACY_COMPANY
         sync: false

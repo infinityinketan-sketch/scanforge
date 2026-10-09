@@ -49,10 +49,11 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         lifecycleScope.launch {
             walletBtn.text = try {
-                val balance = Account.call(this@MainActivity) {
-                    withContext(Dispatchers.IO) { Api.scan.wallet().balance }
+                val wallet = Account.call(this@MainActivity) {
+                    withContext(Dispatchers.IO) { Api.scan.wallet() }
                 }
-                "Wallet · $balance points"
+                Privacy.ensureConsent(this@MainActivity, lifecycleScope, wallet)
+                "Wallet · ${wallet.balance} points"
             } catch (_: Exception) {
                 "Wallet (offline)"
             }

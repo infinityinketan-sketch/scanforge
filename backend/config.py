@@ -42,6 +42,7 @@ TRIPO_API_KEY = os.getenv("TRIPO_API_KEY", "").strip()   # pasted keys often car
 TRIPO_MODEL = os.getenv("TRIPO_MODEL", "v3.1-20260211")
 TRIPO_BASE = os.getenv("TRIPO_BASE", "https://openapi.tripo3d.ai/v3")
 TRIPO_FACE_LIMIT = int(os.getenv("TRIPO_FACE_LIMIT", "300000"))
+TRIPO_TEXTURE_QUALITY = os.getenv("TRIPO_TEXTURE_QUALITY", "detailed")   # or "standard" (cheaper)
 # Printable size for STL exports (largest dimension, mm). Photo scans carry no real-world scale.
 STL_SIZE_MM = float(os.getenv("STL_SIZE_MM", "100"))
 # Which Tripo view slot each quarter of the walk-around fills, in capture order.
@@ -111,13 +112,29 @@ SERVICE_ACCOUNT_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_PATH", "")
 # Dev ONLY
 DEV_BILLING = os.getenv("ALLOW_DEV_BILLING", "0")
 
+# Photo and model storage (see storage.py). Unset R2_BUCKET = keep files on the server's disk.
+R2_ENDPOINT = os.getenv("R2_ENDPOINT", "")          # https://<account id>.r2.cloudflarestorage.com
+R2_BUCKET = os.getenv("R2_BUCKET", "")
+R2_KEY_ID = os.getenv("R2_KEY_ID", "")
+R2_SECRET = os.getenv("R2_SECRET", "")
+R2_REGION = os.getenv("R2_REGION", "auto")
+# Photos and models are deleted this many days after a scan finishes (privacy notice promise).
+RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "90"))
+
+# Privacy notice (GET /privacy). Bump PRIVACY_VERSION when the notice changes: the app asks
+# customers to agree again.
+PRIVACY_VERSION = os.getenv("PRIVACY_VERSION", "2026-10")
+PRIVACY_COMPANY = os.getenv("PRIVACY_COMPANY", "ScanForge")
+PRIVACY_CONTACT_EMAIL = os.getenv("PRIVACY_CONTACT_EMAIL", "")
+
 # Database backups (see backup.py). 0 hours turns the daily backup off.
 BACKUP_EVERY_HOURS = float(os.getenv("BACKUP_EVERY_HOURS", "24"))
 BACKUP_KEEP = int(os.getenv("BACKUP_KEEP", "14"))
-BACKUP_S3_ENDPOINT = os.getenv("BACKUP_S3_ENDPOINT", "")   # e.g. https://<account>.r2.cloudflarestorage.com
-BACKUP_S3_BUCKET = os.getenv("BACKUP_S3_BUCKET", "")
-BACKUP_S3_KEY_ID = os.getenv("BACKUP_S3_KEY_ID", "")
-BACKUP_S3_SECRET = os.getenv("BACKUP_S3_SECRET", "")
+# Off-site copies go to BACKUP_S3_* if set, otherwise to the R2 bucket used for files.
+BACKUP_S3_ENDPOINT = os.getenv("BACKUP_S3_ENDPOINT", "") or R2_ENDPOINT
+BACKUP_S3_BUCKET = os.getenv("BACKUP_S3_BUCKET", "") or R2_BUCKET
+BACKUP_S3_KEY_ID = os.getenv("BACKUP_S3_KEY_ID", "") or R2_KEY_ID
+BACKUP_S3_SECRET = os.getenv("BACKUP_S3_SECRET", "") or R2_SECRET
 
 # "production" turns on start-up safety checks (see main.startup).
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
@@ -136,4 +153,6 @@ def production_problems() -> list[str]:
         problems.append("no Google service account, so Play purchases can't be verified")
     if not API_BASE.startswith("https://"):
         problems.append("API_BASE must be the public https:// address")
+    if not PRIVACY_CONTACT_EMAIL:
+        problems.append("PRIVACY_CONTACT_EMAIL must be set: the privacy notice has to say whom to contact")
     return problems
