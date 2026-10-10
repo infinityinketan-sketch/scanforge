@@ -9,8 +9,9 @@ The app offers two ways to build the model (only those whose API key is set on t
 - **Budget AI model**: open-source TRELLIS (via fal.ai) builds a rough model from 4 photos, ~$0.02.
 - **Quick AI model**: Tripo builds a clean, complete textured model from 4 of the photos in 1–3
   minutes, ~$0.30. Shape details are approximated.
-- **High-accuracy scan**: KIRI Engine photogrammetry from all photos, with automatic background
-  removal. 10–40 minutes, about $1 per scan.
+- **Premium**: Rodin Gen-2.5 (on fal.ai) from the 5 best photos, with 4K textures (HighPack).
+  A few minutes, $1.20 per scan. KIRI Engine photogrammetry remains available with
+  `PREMIUM_SERVICE=kiri`.
 
 The original self-hosted pipeline (below) is still available as a fallback.
 
@@ -61,7 +62,8 @@ python -m pytest tests     # end-to-end API tests, no GPU / Play needed
 | `API_BASE` | **yes** | Public URL of this backend (the GPU worker calls back to it) |
 | `FAL_KEY` | for **Budget AI** | fal.ai TRELLIS multi-image (open source, ~$0.02/model) |
 | `TRIPO_API_KEY` | for **Quick AI** | Tripo multiview-to-model (~$0.30/model) |
-| `KIRI_API_KEY` | for **High-accuracy** | KIRI Engine Photo Scan with background removal (~$1/scan, needs 20+ photos). `KIRI_SCAN=featureless` for shiny objects |
+| `RODIN_ADDONS`, `RODIN_MESH`, `RODIN_TIER` | | Premium (Rodin Gen-2.5, uses `FAL_KEY`). Defaults `HighPack` (4K textures, $0.40 + $0.80), `500K Triangle`, `Gen-2.5-High`. `RODIN_ADDONS=` (empty) for 2K textures at $0.40 |
+| `PREMIUM_SERVICE`, `KIRI_API_KEY` | optional | `PREMIUM_SERVICE=kiri` runs Premium on KIRI Engine photogrammetry instead (~$1/scan, needs 20+ photos) |
 | `DEFAULT_TIER` | | Used when the app doesn't choose. Default `quick` |
 | `TIER_POINTS` | | Points per scan. Default `basic=29,quick=99,hq=249` (1 point = ₹1) |
 | `POINT_PACKS`, `PACK_PRICES` | | Play products sold as point packs and their price labels |
@@ -147,4 +149,4 @@ restart). Production runs on **Render** from `render.yaml`:
    the service account with "View financial data", upload the `.aab` to the internal testing
    track, and test real purchases there before production.
 7. **Alerts.** Add an uptime check on `https://<your-service>/healthz` and turn on low-credit
-   alerts in the Tripo, fal.ai and KIRI dashboards.
+   alerts in the Tripo and fal.ai dashboards.

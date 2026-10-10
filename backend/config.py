@@ -48,7 +48,15 @@ STL_SIZE_MM = float(os.getenv("STL_SIZE_MM", "100"))
 # Which Tripo view slot each quarter of the walk-around fills, in capture order.
 TRIPO_VIEW_ORDER = os.getenv("TRIPO_VIEW_ORDER", "front,left,back,right")
 FAL_KEY = os.getenv("FAL_KEY", "").strip()   # pasted keys often carry a stray newline
-# High-accuracy tier: KIRI Engine
+# Premium tier: Rodin Gen-2.5 on fal.ai (uses FAL_KEY), or KIRI Engine with PREMIUM_SERVICE=kiri.
+PREMIUM_SERVICE = os.getenv("PREMIUM_SERVICE", "rodin")
+RODIN_MODEL = os.getenv("RODIN_MODEL", "fal-ai/hyper3d/rodin/v2.5")
+RODIN_TIER = os.getenv("RODIN_TIER", "Gen-2.5-High")
+RODIN_MESH = os.getenv("RODIN_MESH", "500K Triangle")       # fal's quality_mesh_option
+# HighPack: 4K textures instead of 2K (+$0.80 on top of $0.40). Empty = off.
+RODIN_ADDONS = [a.strip() for a in os.getenv("RODIN_ADDONS", "HighPack").split(",") if a.strip()]
+RODIN_VIEWS = int(os.getenv("RODIN_VIEWS", "5"))            # Rodin takes at most 5 images
+# KIRI Engine (alternative premium service)
 KIRI_API_KEY = os.getenv("KIRI_API_KEY", "").strip()   # pasted keys often carry a stray newline
 KIRI_SCAN = os.getenv("KIRI_SCAN", "photo")                # "photo" or "featureless" (shiny objects)
 KIRI_MODEL_QUALITY = int(os.getenv("KIRI_MODEL_QUALITY", "0"))      # 0 high, 1 medium, 2 low, 3 ultra

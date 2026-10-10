@@ -193,13 +193,13 @@ class CaptureActivity : ComponentActivity() {
     private fun updateUi() {
         ring.progress = shots.size
         info.text = "${shots.size} photos · start facing the object's front, then walk slowly around it " +
-            "moving to your right. 1–2 full circles, steady light. High-accuracy needs 20+ photos."
+            "moving to your right. 1–2 full circles, steady light."
         if (!capturing && !busy) {
             btn.text = if (shots.size >= MIN_SHOTS) "⬆ Upload ${shots.size} photos" else "▶ Start scanning"
         }
     }
 
-    /** Let the user pick Quick AI vs High-accuracy when the server offers more than one. */
+    /** Let the user pick Basic / Standard / Premium when the server offers more than one. */
     private fun chooseTierThenUpload() {
         if (tiers.size <= 1) return upload(tiers.firstOrNull()?.id)
         val dp = resources.displayMetrics.density

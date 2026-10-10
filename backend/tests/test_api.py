@@ -211,8 +211,10 @@ def test_quick_tier_end_to_end(client, monkeypatch):
     assert len(preview) < len(glb)             # preview carries a smaller texture
 
 
-def test_hq_needs_20_photos_and_reports_failure(client, monkeypatch):
+def test_hq_needs_20_photos_with_kiri_and_reports_failure(client, monkeypatch):
+    import config
     import processor
+    monkeypatch.setattr(config, "PREMIUM_SERVICE", "kiri")
     fake = FakeProvider(outcome="failed", polls_before_done=0)
     c = _tier_client(client, monkeypatch, fake)
     few = _new_real_job(c, 12, tier="hq")
@@ -245,7 +247,10 @@ def test_budget_tier_uses_trellis(client, monkeypatch):
     assert isinstance(providers.provider_for("basic"), providers.FalTrellis)
     assert providers.provider_for("quick") is None
     t = client.get("/tiers").json()["tiers"]
-    assert [x["id"] for x in t] == ["basic"] and t[0]["export_product_id"] == "scan_basic"
+    # One fal key runs Basic (TRELLIS) and Premium (Rodin).
+    assert [x["id"] for x in t] == ["basic", "hq"] and t[0]["export_product_id"] == "scan_basic"
+    assert isinstance(providers.provider_for("hq"), providers.FalRodin)
+    assert t[1]["min_photos"] == 8
 
 
 def test_pick_views_spreads_round_the_loop(tmp_path):

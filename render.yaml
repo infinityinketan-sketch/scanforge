@@ -36,7 +36,7 @@ services:
         sync: false
       - key: TRIPO_API_KEY
         sync: false
-      - key: KIRI_API_KEY
+      - key: KIRI_API_KEY             # only with PREMIUM_SERVICE=kiri; Premium uses FAL_KEY (Rodin)
         sync: false
       # Points and packs (1 point = ₹1). Keep PACK_PRICES equal to the Play Console prices.
       - key: TIER_POINTS

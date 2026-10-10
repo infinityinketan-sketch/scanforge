@@ -320,15 +320,15 @@ async def process(job_id: str, req: ProcessReq | None = Body(None),
         account = _account(authorization)
         if job["account_id"] and job["account_id"] != account:
             raise HTTPException(403, "this scan belongs to another account")
-        if job["n_photos"] < providers.TIERS[tier]["min_photos"]:
-            raise HTTPException(400, f"need at least {providers.TIERS[tier]['min_photos']} photos for this option")
+        if job["n_photos"] < providers.min_photos(tier):
+            raise HTTPException(400, f"need at least {providers.min_photos(tier)} photos for this option")
         cost = config.points_for_tier(tier)
         ok, bal = db.spend(account, cost, job_id, f"{providers.TIERS[tier]['name']} scan")
         if not ok:
             raise HTTPException(402, f"Not enough points: this scan needs {cost}, you have {bal}.")
         db.update_job(job_id, paid=1, product_id="points", cost=cost, account_id=account, tier=tier)
         job = db.get_job(job_id)
-    min_photos = providers.TIERS[tier]["min_photos"] if prov else config.MIN_PHOTOS
+    min_photos = providers.min_photos(tier) if prov else config.MIN_PHOTOS
     if job["n_photos"] < min_photos:
         raise HTTPException(400, f"need at least {min_photos} photos for this option")
     if not prov and not config.API_BASE:
@@ -541,8 +541,8 @@ def billing_verify(req: VerifyReq):
     if req.product_id != config.product_for_tier(job["tier"]):
         raise HTTPException(400, "this purchase doesn't match this kind of scan")
     # Refuse before the app acknowledges the purchase, so Play refunds it automatically.
-    if _service_tier(job["tier"]) and job["n_photos"] < providers.TIERS[job["tier"]]["min_photos"]:
-        raise HTTPException(400, f"need at least {providers.TIERS[job['tier']]['min_photos']} photos for this option")
+    if _service_tier(job["tier"]) and job["n_photos"] < providers.min_photos(job["tier"]):
+        raise HTTPException(400, f"need at least {providers.min_photos(job['tier'])} photos for this option")
     if not verify_purchase(req.job_id, req.product_id, req.token):
         raise HTTPException(400, "purchase verification failed")
     db.update_job(req.job_id, paid=1, product_id=req.product_id, purchase_token=req.token)

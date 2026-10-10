@@ -25,7 +25,7 @@ _errors: dict[str, int] = {}
 
 # Problems on our side (keys, credit, outages): the customer can't fix these by rescanning.
 _OUR_PROBLEM = ("api key", "credit", "not configured", "unreachable", "error 5", "timeout")
-_SERVICE_NAMES = re.compile(r"\b(tripo|kiri engine|kiri|fal\.ai|fal|trellis)\b:?\s*", re.I)
+_SERVICE_NAMES = re.compile(r"\b(tripo|kiri engine|kiri|fal\.ai|fal|trellis|rodin|hyper3d)\b:?\s*", re.I)
 
 
 def customer_message(msg: str) -> str:

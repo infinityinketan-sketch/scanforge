@@ -10,7 +10,8 @@ processor thread, never in a request):
 Tiers (each paid before processing starts):
     basic  fal.ai TRELLIS (open source): ~$0.02, AI-generated shape, lower fidelity
     quick  Tripo multiview-to-model: ~$0.30, AI-generated shape, clean textured model
-    hq     KIRI Engine Photo Scan: ~$1, real photogrammetry with background removal
+    hq     Rodin Gen-2.5 on fal.ai: $0.40 + $0.80 HighPack (4K textures), from the 5 best views
+           (KIRI Engine photogrammetry, ~$1, with PREMIUM_SERVICE=kiri)
 """
 from __future__ import annotations
 
@@ -175,7 +176,34 @@ class FalTrellis:
         _download(url, dest)
 
 
-# ---------- KIRI Engine (high-accuracy tier) ----------
+# ---------- Rodin Gen-2.5 on fal.ai (premium tier) ----------
+class FalRodin(FalTrellis):
+    """Same fal queue as TRELLIS; Rodin takes up to 5 views and returns PBR materials."""
+    name = "fal_rodin"
+
+    def __init__(self, key: str):
+        super().__init__(key)
+        self.model = config.RODIN_MODEL
+
+    def submit(self, photos: list[Path]) -> str:
+        views = pick_views(photos, min(config.RODIN_VIEWS, 5), 1536)
+        body = {
+            "image_urls": ["data:image/jpeg;base64," + base64.b64encode(v).decode() for v in views],
+            "tier": config.RODIN_TIER,
+            "geometry_file_format": "glb",
+            "material": "PBR",
+            "quality_mesh_option": config.RODIN_MESH,
+            "hd_texture": True,
+        }
+        if config.RODIN_ADDONS:
+            body["addons"] = config.RODIN_ADDONS
+        with httpx.Client(timeout=TIMEOUT, headers=self.h) as c:
+            r = c.post(f"https://queue.fal.run/{self.model}", json=body)
+            res = _check(r, "fal.ai")
+        return json.dumps({"status_url": res["status_url"], "response_url": res["response_url"]})
+
+
+# ---------- KIRI Engine (alternative premium service) ----------
 KIRI_STATUS = {-1: "uploading", 0: "processing", 1: "failed", 2: "success", 3: "queuing", 4: "expired"}
 KIRI_MIN_PHOTOS = 20
 KIRI_MAX_PHOTOS = 300
@@ -272,11 +300,11 @@ TIERS = {
     "hq": {
         "name": "Premium",
         "quality": 5,
-        "eta": "10–40 minutes",
-        "detail": "Highest accuracy: measured from all your photos with the background removed. "
-                  "Best for exact copies and 3D printing.",
-        "min_photos": KIRI_MIN_PHOTOS,
-        "timeout": 4 * 3600,
+        "eta": "About 3–5 minutes",
+        "detail": "Our most detailed model: sharp 4K textures and fine surface detail. Best for "
+                  "display, AR and high-quality 3D prints.",
+        "min_photos": 8,
+        "timeout": 1800,
     },
 }
 
@@ -287,15 +315,23 @@ def provider_for(tier: str):
     if tier == "quick":
         return Tripo(config.TRIPO_API_KEY) if config.TRIPO_API_KEY else None
     if tier == "hq":
-        return Kiri(config.KIRI_API_KEY) if config.KIRI_API_KEY else None
+        if config.PREMIUM_SERVICE == "kiri":
+            return Kiri(config.KIRI_API_KEY) if config.KIRI_API_KEY else None
+        return FalRodin(config.FAL_KEY) if config.FAL_KEY else None
     return None
+
+
+def min_photos(tier: str) -> int:
+    if tier == "hq" and config.PREMIUM_SERVICE == "kiri":
+        return KIRI_MIN_PHOTOS
+    return TIERS[tier]["min_photos"]
 
 
 def available_tiers() -> list[dict]:
     out = []
     for tid, t in TIERS.items():
         if provider_for(tid):
-            out.append({"id": tid, "name": t["name"], "detail": t["detail"], "min_photos": t["min_photos"],
+            out.append({"id": tid, "name": t["name"], "detail": t["detail"], "min_photos": min_photos(tid),
                         "quality": t["quality"], "eta": t["eta"], "price": config.price_for_tier(tid),
                         "points": config.points_for_tier(tid),
                         "export_product_id": config.product_for_tier(tid)})

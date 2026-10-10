@@ -152,3 +152,42 @@ def test_fal_trellis(prov, monkeypatch, tmp_path):
     f = prov.FalTrellis("fk")
     task = f.submit(_photos(tmp_path, 16))
     assert f.poll(task) == prov.Poll("success", 100, url="https://fal.media/m.glb")
+
+
+def test_fal_rodin_premium(prov, monkeypatch, tmp_path):
+    seen = {}
+
+    def handler(req: httpx.Request):
+        assert req.headers["authorization"] == "Key fk"
+        if req.method == "POST":
+            assert req.url.path == "/fal-ai/hyper3d/rodin/v2.5"
+            seen["body"] = json.loads(req.content)
+            return httpx.Response(200, json={"request_id": "r2", "status_url": "https://queue.fal.run/x/requests/r2/status",
+                                             "response_url": "https://queue.fal.run/x/requests/r2"})
+        if req.url.path.endswith("/status"):
+            return httpx.Response(200, json={"status": "IN_PROGRESS"} if "polled" not in seen else {"status": "COMPLETED"})
+        return httpx.Response(200, json={"model_mesh": {"url": "https://fal.media/rodin.glb"}, "textures": []})
+
+    _mock(monkeypatch, handler)
+    monkeypatch.setattr(prov.config, "FAL_KEY", "fk")
+    r = prov.provider_for("hq")
+    assert isinstance(r, prov.FalRodin)
+    task = r.submit(_photos(tmp_path, 24))
+    b = seen["body"]
+    assert len(b["image_urls"]) == 5                      # Rodin's maximum
+    assert b["tier"] == "Gen-2.5-High" and b["material"] == "PBR" and b["geometry_file_format"] == "glb"
+    assert b["addons"] == ["HighPack"] and b["hd_texture"] is True
+    assert r.poll(task).state == "running"
+    seen["polled"] = True
+    assert r.poll(task) == prov.Poll("success", 100, url="https://fal.media/rodin.glb")
+
+    tiers = {t["id"]: t for t in prov.available_tiers()}
+    assert tiers["hq"]["name"] == "Premium" and tiers["hq"]["min_photos"] == 8
+    assert "rodin" not in json.dumps(tiers).lower()       # never shown to customers
+
+
+def test_premium_can_switch_back_to_kiri(prov, monkeypatch):
+    monkeypatch.setattr(prov.config, "PREMIUM_SERVICE", "kiri")
+    monkeypatch.setattr(prov.config, "KIRI_API_KEY", "kk")
+    assert isinstance(prov.provider_for("hq"), prov.Kiri)
+    assert prov.min_photos("hq") == 20

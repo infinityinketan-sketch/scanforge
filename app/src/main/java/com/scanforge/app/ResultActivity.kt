@@ -150,8 +150,8 @@ class ResultActivity : ComponentActivity() {
                 when (s.tier) {
                     "basic" -> "⏳ Building your model…$pct\nUsually about 1 minute."
                     "quick" -> "⏳ Building your model…$pct\nUsually 1–3 minutes."
-                    "hq" -> "⏳ High-accuracy reconstruction from ${s.n_photos} photos…$pct\n" +
-                        "Usually 10–40 minutes. You can close the app and come back."
+                    "hq" -> "⏳ Building your Premium model…$pct\n" +
+                        "Usually 3–5 minutes. You can close the app and come back."
                     else -> "⏳ Reconstructing your model… (${s.n_photos} photos)\nThis can take a while."
                 }
             }
