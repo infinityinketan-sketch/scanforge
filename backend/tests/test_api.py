@@ -250,7 +250,7 @@ def test_budget_tier_uses_trellis(client, monkeypatch):
     # One fal key runs Basic (TRELLIS) and Premium (Rodin).
     assert [x["id"] for x in t] == ["basic", "hq"] and t[0]["export_product_id"] == "scan_basic"
     assert isinstance(providers.provider_for("hq"), providers.FalRodin)
-    assert t[1]["min_photos"] == 8
+    assert (t[0]["min_photos"], t[0]["good_photos"], t[1]["min_photos"]) == (8, 16, 16)
 
 
 def test_pick_views_spreads_round_the_loop(tmp_path):

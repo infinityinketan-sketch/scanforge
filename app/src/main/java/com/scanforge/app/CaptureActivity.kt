@@ -51,6 +51,7 @@ class CaptureActivity : ComponentActivity() {
     private lateinit var ring: RingView
     private lateinit var info: TextView
     private lateinit var btn: Button
+    private lateinit var needsBox: LinearLayout    // photos each option needs, updated live
     private var imageCapture: ImageCapture? = null
     private lateinit var cameraExecutor: ExecutorService
 
@@ -91,6 +92,16 @@ class CaptureActivity : ComponentActivity() {
 
         root.addView(previewView)
         root.addView(ring)
+        needsBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val dp = resources.displayMetrics.density
+            setPadding((14 * dp).toInt(), (10 * dp).toInt(), (14 * dp).toInt(), (10 * dp).toInt())
+            background = GradientDrawable().apply { cornerRadius = 14 * dp; setColor(0xB3000000.toInt()) }
+        }
+        root.addView(needsBox, FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply {
+            val m = (12 * resources.displayMetrics.density).toInt()
+            setMargins(m, m * 3, m, 0)
+        })
         val bottom = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 16, 32, 48)
@@ -124,7 +135,12 @@ class CaptureActivity : ComponentActivity() {
         } catch (_: Exception) {
             null
         }
+        ring.total = tiers.maxOfOrNull { maxOf(it.good_photos, it.min_photos) }?.coerceIn(8, 60) ?: 24
+        updateUi()
     }
+
+    /** Fewest photos any offered option accepts: below this nothing can be built. */
+    private fun minShots() = tiers.minOfOrNull { it.min_photos } ?: FALLBACK_MIN_SHOTS
 
     private fun startCamera() {
         val providerFuture = ProcessCameraProvider.getInstance(this)
@@ -148,15 +164,15 @@ class CaptureActivity : ComponentActivity() {
             Toast.makeText(this, "Camera is still starting…", Toast.LENGTH_SHORT).show()
             return
         }
-        if (!capturing && shots.size >= MIN_SHOTS) { chooseTierThenUpload(); return }
+        if (!capturing && shots.size >= minShots()) { chooseTierThenUpload(); return }
         capturing = !capturing
         btn.text = if (capturing) "■ Stop & upload" else "▶ Start scanning"
         if (capturing) {
             handler.post(shotLoop)
         } else {
             handler.removeCallbacks(shotLoop)
-            if (shots.size >= MIN_SHOTS) chooseTierThenUpload()
-            else Toast.makeText(this, "Need at least $MIN_SHOTS photos", Toast.LENGTH_LONG).show()
+            if (shots.size >= minShots()) chooseTierThenUpload()
+            else Toast.makeText(this, "Need at least ${minShots()} photos. Keep walking around the object.", Toast.LENGTH_LONG).show()
         }
         updateUi()
     }
@@ -191,12 +207,56 @@ class CaptureActivity : ComponentActivity() {
     }
 
     private fun updateUi() {
-        ring.progress = shots.size
-        info.text = "${shots.size} photos · start facing the object's front, then walk slowly around it " +
-            "moving to your right. 1–2 full circles, steady light."
-        if (!capturing && !busy) {
-            btn.text = if (shots.size >= MIN_SHOTS) "⬆ Upload ${shots.size} photos" else "▶ Start scanning"
+        val n = shots.size
+        ring.progress = n
+        showNeeds(n)
+        val next = tiers.filter { n < it.min_photos }.minByOrNull { it.min_photos }
+        info.text = when {
+            n == 0 -> "Start facing the object's front, then walk slowly around it moving to your " +
+                "right. 1–2 full circles, steady light. A photo is taken every 2.5 s."
+            next != null -> "$n photos · ${next.min_photos - n} more to unlock ${next.name}. Keep walking slowly."
+            else -> "$n photos · every option is unlocked. More photos (up to the green target) give better detail."
         }
+        if (!capturing && !busy) {
+            btn.text = when {
+                n >= minShots() && tiers.size > 1 -> "⬆ Choose quality · $n photos"
+                n >= minShots() -> "⬆ Upload $n photos"
+                n > 0 -> "▶ Continue scanning"
+                else -> "▶ Start scanning"
+            }
+        }
+    }
+
+    /** Top panel: each option's photo minimum and best count, ticked off as photos come in. */
+    private fun showNeeds(n: Int) {
+        needsBox.removeAllViews()
+        needsBox.addView(TextView(this).apply {
+            text = "Photos needed"
+            textSize = 13f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(0xFFFFFFFF.toInt())
+        })
+        if (tiers.isEmpty()) {
+            needsBox.addView(needRow("Scan", FALLBACK_MIN_SHOTS, 0, n))
+            return
+        }
+        tiers.forEach { needsBox.addView(needRow(it.name, it.min_photos, it.good_photos, n)) }
+    }
+
+    private fun needRow(name: String, min: Int, good: Int, n: Int) = TextView(this).apply {
+        val status = when {
+            good > min && n >= good -> "✓ best"
+            n >= min -> if (good > min) "✓ ready · best at $good" else "✓ ready"
+            else -> "${min - n} more"
+        }
+        text = "$name   ·   $min+ photos" + (if (good > min) " (best $good+)" else "") + "   →   $status"
+        textSize = 13f
+        setTextColor(when {
+            good > min && n >= good -> 0xFF69F0AE.toInt()
+            n >= min -> 0xFFB9F6CA.toInt()
+            else -> 0xFFFFCC80.toInt()
+        })
+        setPadding(0, (3 * resources.displayMetrics.density).toInt(), 0, 0)
     }
 
     /** Let the user pick Basic / Standard / Premium when the server offers more than one. */
@@ -284,9 +344,17 @@ class CaptureActivity : ComponentActivity() {
             setTextColor(0xFF424242.toInt())
             setPadding(0, px(6), 0, 0)
         })
+        card.addView(TextView(this).apply {
+            text = "Photos: ${t.min_photos}+ needed" +
+                (if (t.good_photos > t.min_photos) ", ${t.good_photos}+ for best results" else "") +
+                " · you have ${shots.size}"
+            textSize = 13f
+            setTextColor(if (enough) 0xFF1B5E20.toInt() else 0xFF757575.toInt())
+            setPadding(0, px(6), 0, 0)
+        })
         if (!enough) {
             card.addView(TextView(this).apply {
-                text = "Needs ${t.min_photos}+ photos (you have ${shots.size})"
+                text = "Needs ${t.min_photos - shots.size} more photos: tap Cancel and continue scanning"
                 textSize = 13f
                 setTextColor(0xFFC62828.toInt())
                 setPadding(0, px(6), 0, 0)
@@ -400,7 +468,7 @@ class CaptureActivity : ComponentActivity() {
     }
 
     companion object {
-        const val MIN_SHOTS = 12
+        const val FALLBACK_MIN_SHOTS = 8   // server unreachable or older server without options
         const val MAX_SHOTS = 150
     }
 }

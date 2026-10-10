@@ -182,7 +182,7 @@ def test_fal_rodin_premium(prov, monkeypatch, tmp_path):
     assert r.poll(task) == prov.Poll("success", 100, url="https://fal.media/rodin.glb")
 
     tiers = {t["id"]: t for t in prov.available_tiers()}
-    assert tiers["hq"]["name"] == "Premium" and tiers["hq"]["min_photos"] == 8
+    assert tiers["hq"]["name"] == "Premium" and tiers["hq"]["min_photos"] == 16 and tiers["hq"]["good_photos"] == 30
     assert "rodin" not in json.dumps(tiers).lower()       # never shown to customers
 
 

@@ -52,6 +52,7 @@ data class Tier(
     val eta: String? = null,       // e.g. "About 2 minutes"
     val price: String? = null,     // e.g. "₹99"
     val points: Int = 0,           // points this option costs
+    val good_photos: Int = 0,      // photo count that gives the best result
 )
 
 data class NewAccount(val account_id: String, val token: String)

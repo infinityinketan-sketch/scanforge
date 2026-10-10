@@ -89,6 +89,11 @@ def _pairs(env, default):
     return dict(p.split("=", 1) for p in os.getenv(env, default).split(",") if "=" in p)
 
 
+# Photos each option needs (minimum to start) and the count that gives the best result
+# (shown in the app while scanning). More photos = more angles to pick the sharpest views from.
+TIER_MIN_PHOTOS = {k: int(v) for k, v in _pairs("TIER_MIN_PHOTOS", "basic=8,quick=12,hq=16").items()}
+TIER_GOOD_PHOTOS = {k: int(v) for k, v in _pairs("TIER_GOOD_PHOTOS", "basic=16,quick=24,hq=30").items()}
+
 # Points each option costs.
 TIER_POINTS = {k: int(v) for k, v in _pairs("TIER_POINTS", "basic=29,quick=99,hq=249").items()}
 # Point packs sold through Google Play: product id -> points, and the price label shown.

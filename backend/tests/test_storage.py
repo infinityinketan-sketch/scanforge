@@ -70,17 +70,17 @@ def test_direct_upload_process_and_download(r2, monkeypatch):
 
     # Someone else can't get upload links for this scan.
     assert c.post(f"/jobs/{job}/upload-urls", json={"count": 1}, headers=_account(c)).status_code == 403
-    r = c.post(f"/jobs/{job}/upload-urls", json={"count": 10}, headers=h).json()
-    assert r["direct"] and len(r["urls"]) == 10 and r["content_type"] == "image/jpeg"
+    r = c.post(f"/jobs/{job}/upload-urls", json={"count": 12}, headers=h).json()
+    assert r["direct"] and len(r["urls"]) == 12 and r["content_type"] == "image/jpeg"
     for i, url in enumerate(r["urls"]):
         assert "Authorization" not in url and _put(url, _real_jpeg(i)).status_code == 200
-    assert c.post(f"/jobs/{job}/photos/complete", headers=h).json() == {"n_photos": 10, "rejected": 0}
-    assert c.post(f"/jobs/{job}/photos/complete", headers=h).json()["n_photos"] == 10   # repeatable
-    assert c.get(f"/jobs/{job}").json()["n_photos"] == 10
+    assert c.post(f"/jobs/{job}/photos/complete", headers=h).json() == {"n_photos": 12, "rejected": 0}
+    assert c.post(f"/jobs/{job}/photos/complete", headers=h).json()["n_photos"] == 12   # repeatable
+    assert c.get(f"/jobs/{job}").json()["n_photos"] == 12
 
     assert c.post(f"/jobs/{job}/process", headers=h).json() == {"status": "queued"}
     processor.run_once()                       # pulls the photos in and submits
-    assert len(fake.submitted) == 10
+    assert len(fake.submitted) == 12
     processor.run_once()                       # done: outputs go to the bucket
     keys = {o["key"] for o in store.list(f"jobs/{job}/")}
     assert {f"jobs/{job}/model.glb", f"jobs/{job}/model.stl", f"jobs/{job}/preview.glb"} <= keys

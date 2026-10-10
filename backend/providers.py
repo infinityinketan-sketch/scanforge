@@ -322,9 +322,14 @@ def provider_for(tier: str):
 
 
 def min_photos(tier: str) -> int:
+    n = config.TIER_MIN_PHOTOS.get(tier, TIERS[tier]["min_photos"])
     if tier == "hq" and config.PREMIUM_SERVICE == "kiri":
-        return KIRI_MIN_PHOTOS
-    return TIERS[tier]["min_photos"]
+        return max(n, KIRI_MIN_PHOTOS)
+    return n
+
+
+def good_photos(tier: str) -> int:
+    return max(config.TIER_GOOD_PHOTOS.get(tier, 0), min_photos(tier))
 
 
 def available_tiers() -> list[dict]:
@@ -332,6 +337,7 @@ def available_tiers() -> list[dict]:
     for tid, t in TIERS.items():
         if provider_for(tid):
             out.append({"id": tid, "name": t["name"], "detail": t["detail"], "min_photos": min_photos(tid),
+                        "good_photos": good_photos(tid),
                         "quality": t["quality"], "eta": t["eta"], "price": config.price_for_tier(tid),
                         "points": config.points_for_tier(tid),
                         "export_product_id": config.product_for_tier(tid)})
